@@ -1,0 +1,22 @@
+.DS_Store
+
+# Swift Package Manager and packaged app output
+.build/
+macOS/.build/
+macOS/build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Web prototype dependencies and generated output
+node_modules/
+prototype/node_modules/
+prototype/dist/
+
+# Local editor and environment files
+.env
+.env.*
+!.env.example
+*.swp
+*.swo
