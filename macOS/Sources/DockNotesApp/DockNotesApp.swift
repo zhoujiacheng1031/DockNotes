@@ -8,6 +8,9 @@ struct DockNotesApp: App {
     init() {
         if CommandLine.arguments.contains("--self-test") {
             SelfCheck.run()
+        } else if let renderIndex = CommandLine.arguments.firstIndex(of: "--render-desktop-preview"),
+                  CommandLine.arguments.indices.contains(renderIndex + 1) {
+            SelfCheck.renderDesktopPreview(to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]))
         } else if let renderIndex = CommandLine.arguments.firstIndex(of: "--render-deck-preview"),
                   CommandLine.arguments.indices.contains(renderIndex + 1) {
             SelfCheck.renderDeckPreview(to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]))

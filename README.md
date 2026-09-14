@@ -9,8 +9,16 @@ DockNotes 是一款原生 macOS 桌面便签应用。便签可以收纳在屏幕
 - 独立桌面便签、置顶、日期、归档与便签库
 - 渐变色、RGB/Hex 自定义颜色、材质、字体和透明度
 - 有序列表、待办事项、搜索与听写
+- OpenAI 兼容接口与 Anthropic Messages API，可针对当前便签提问并追加结果
+- 应用内归档库，以及可选的 Obsidian Markdown/双向链接索引备份
 - 简体中文、English 和跟随系统语言
 - 本地持久化存储
+
+启用 Obsidian 备份后，DockNotes 会在所选目录写入归档 Markdown，并创建或更新 `DockNotes Archive Index.md` 双向链接索引。
+
+## 下载应用
+
+可从 [GitHub Releases](https://github.com/zhoujiacheng1031/DockNotes/releases/latest) 下载最新的 `DockNotes-macOS.zip`，解压后将 `DockNotes.app` 移入“应用程序”文件夹。
 
 ## 目录
 

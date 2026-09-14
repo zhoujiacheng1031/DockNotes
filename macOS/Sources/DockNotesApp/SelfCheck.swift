@@ -5,6 +5,47 @@ import SwiftUI
 
 @MainActor
 enum SelfCheck {
+    static func renderDesktopPreview(to url: URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = folder.appendingPathComponent("notes.json")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let previewNote = DockNote(
+            title: "记录 DockNotes 的修改",
+            body: "桌面便签缩放预览",
+            colorHex: "#E4F6AA",
+            gradientEndHex: "#FF81A6"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try? encoder.encode([previewNote]).write(to: file)
+        let store = NotesStore(fileURL: file)
+        let defaults = UserDefaults(suiteName: "DockNotes.DesktopPreview.\(UUID().uuidString)")!
+        let settings = AppSettings(defaults: defaults)
+        let renderer = ImageRenderer(
+            content: DesktopNoteWindowView(noteID: previewNote.id, store: store, settings: settings)
+                .frame(width: 700, height: 560)
+                .environment(\.colorScheme, .light)
+        )
+        renderer.proposedSize = ProposedViewSize(width: 700, height: 560)
+        renderer.scale = 2
+        guard let image = renderer.nsImage,
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            fputs("Could not render desktop preview\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        do {
+            try png.write(to: url, options: .atomic)
+            print(url.path)
+            fflush(stdout)
+            exit(EXIT_SUCCESS)
+        } catch {
+            fputs("Could not save desktop preview: \(error)\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+    }
+
     static func renderDeckPreview(to url: URL) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let file = folder.appendingPathComponent("notes.json")
@@ -121,6 +162,44 @@ enum SelfCheck {
         check(ColorInput.hex(red: "12", green: "34", blue: "56") == "#0C2238", "RGB converts to hex")
         check(ColorInput.hex(red: "256", green: "0", blue: "0") == nil, "RGB rejects out-of-range values")
         check(ColorInput.normalizedHex(" 7ead94 ") == "#7EAD94", "hex input is normalized")
+        check(
+            AIClient.endpointURL(from: "https://example.com/v1", provider: .openAICompatible)?.absoluteString
+                == "https://example.com/v1/chat/completions",
+            "AI configuration accepts an OpenAI-compatible base URL"
+        )
+        check(
+            AIClient.endpointURL(from: "not a URL", provider: .openAICompatible) == nil,
+            "AI configuration rejects an invalid service URL"
+        )
+        check(
+            AIClient.endpointURL(from: "https://api.anthropic.com/v1", provider: .anthropic)?.absoluteString
+                == "https://api.anthropic.com/v1/messages",
+            "Anthropic configuration resolves the native Messages API endpoint"
+        )
+        check(
+            AIClient.endpointURL(from: "https://api.anthropic.com/v1/messages/", provider: .anthropic)?.absoluteString
+                == "https://api.anthropic.com/v1/messages",
+            "Anthropic accepts a complete Messages endpoint with a trailing slash"
+        )
+        let anthropicRequest = try? AIClient.makeRequest(
+            configuration: AIConfiguration(
+                provider: .anthropic,
+                endpoint: "https://api.anthropic.com/v1",
+                model: "claude-test",
+                apiKey: "anthropic-test-key"
+            ),
+            note: DockNote(title: "Request Test", body: "Context"),
+            prompt: "Summarize",
+            language: .english
+        )
+        check(anthropicRequest?.value(forHTTPHeaderField: "x-api-key") == "anthropic-test-key", "Anthropic uses x-api-key authentication")
+        check(anthropicRequest?.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01", "Anthropic sends the required API version header")
+        if let body = anthropicRequest?.httpBody,
+           let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            check(object["system"] != nil && object["max_tokens"] as? Int == 2_048, "Anthropic uses the native Messages request body")
+        } else {
+            check(false, "Anthropic request body can be inspected")
+        }
 
         let orderedText = "1. one\n2. two\n3. three\n4. four"
         let orderedCaret = ("1. one\n2. two" as NSString).length
@@ -150,6 +229,129 @@ enum SelfCheck {
         defer { try? FileManager.default.removeItem(at: folder) }
 
         let first = NotesStore(fileURL: file)
+        let exportDirectory = folder.appendingPathComponent("Obsidian", isDirectory: true)
+        let exportNote = DockNote(title: "AI / Archive Test", body: "Portable Markdown")
+        let exportedURL = try? ObsidianArchiveExporter.export(exportNote, to: exportDirectory)
+        check(exportedURL?.lastPathComponent == "AI Archive Test.md", "Obsidian backup sanitizes note filenames")
+        check(
+            (try? String(contentsOf: exportedURL!, encoding: .utf8))?.contains("docknotes-id: \(exportNote.id.uuidString)") == true,
+            "Obsidian backup includes stable DockNotes metadata"
+        )
+        let exportIndex = try? String(
+            contentsOf: exportDirectory.appendingPathComponent("DockNotes Archive Index.md"),
+            encoding: .utf8
+        )
+        check(exportIndex?.contains("[[AI Archive Test]]") == true, "Obsidian backup maintains a wikilink index")
+        let archiveBackupStore = NotesStore(fileURL: folder.appendingPathComponent("archive-backup.json"))
+        let archivedBackupID = archiveBackupStore.notes[0].id
+        archiveBackupStore.archive(
+            archivedBackupID,
+            obsidianDirectory: exportDirectory,
+            obsidianBackupEnabled: true
+        )
+        check(
+            archiveBackupStore.archivedNotes.contains(where: { $0.id == archivedBackupID }),
+            "Obsidian backup preserves the DockNotes in-app archive"
+        )
+        check(
+            archiveBackupStore.lastObsidianBackupURL != nil && archiveBackupStore.lastObsidianBackupError == nil,
+            "archiving through the app writes the configured Obsidian backup"
+        )
+        let windowDefaults = UserDefaults(suiteName: "DockNotes.WindowSelfCheck.\(UUID().uuidString)")!
+        let windowSettings = AppSettings(defaults: windowDefaults)
+        let windowCoordinator = PanelCoordinator(store: first, settings: windowSettings)
+        let desktopWindow = windowCoordinator.makeDesktopNoteWindow(for: first.notes[0].id)
+        desktopWindow.orderFrontRegardless()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.15))
+        let initialContentSize = desktopWindow.frame.size
+        check(
+            abs(initialContentSize.width - 460) < 1 && abs(initialContentSize.height - 380) < 1,
+            "a desktop note opens at its 460 by 380 default content size"
+        )
+        check(
+            desktopWindow.styleMask.contains(.borderless)
+                && desktopWindow.styleMask.contains(.resizable)
+                && desktopWindow.isMovable
+                && desktopWindow.isMovableByWindowBackground,
+            "desktop notes support both resizing and background movement"
+        )
+        let movedOrigin = NSPoint(x: desktopWindow.frame.minX + 24, y: desktopWindow.frame.minY + 18)
+        desktopWindow.setFrameOrigin(movedOrigin)
+        check(
+            abs(desktopWindow.frame.minX - movedOrigin.x) < 1
+                && abs(desktopWindow.frame.minY - movedOrigin.y) < 1,
+            "desktop note position changes are not blocked by the implicit-size guard"
+        )
+        (desktopWindow as? DesktopNoteWindow)?.setExplicitFrame(
+            NSRect(origin: desktopWindow.frame.origin, size: CGSize(width: 700, height: 560)),
+            display: false
+        )
+        let enlargedContentSize = desktopWindow.frame.size
+        let enlargedHostingSize = desktopWindow.contentView?.subviews.first?.frame.size ?? .zero
+        check(
+            abs(enlargedContentSize.width - 700) < 1 && abs(enlargedContentSize.height - 560) < 1,
+            "a desktop note and its hosted content resize beyond the default size"
+        )
+        check(
+            abs(enlargedHostingSize.width - 700) < 1 && abs(enlargedHostingSize.height - 560) < 1,
+            "the SwiftUI desktop note surface follows the enlarged native window"
+        )
+        let desktopRenderer = ImageRenderer(
+            content: DesktopNoteWindowView(
+                noteID: first.notes[0].id,
+                store: first,
+                settings: windowSettings
+            )
+            .frame(width: 700, height: 560)
+            .environment(\.colorScheme, .light)
+        )
+        desktopRenderer.proposedSize = ProposedViewSize(width: 700, height: 560)
+        desktopRenderer.scale = 1
+        if let renderedImage = desktopRenderer.nsImage,
+           let renderedTIFF = renderedImage.tiffRepresentation,
+           let renderedBitmap = NSBitmapImageRep(data: renderedTIFF) {
+            var pixel = [Int](repeating: 0, count: renderedBitmap.samplesPerPixel)
+            renderedBitmap.getPixel(
+                &pixel,
+                atX: min(650, renderedBitmap.pixelsWide - 1),
+                y: min(280, renderedBitmap.pixelsHigh - 1)
+            )
+            let alpha = renderedBitmap.hasAlpha ? (pixel.last ?? 0) : 255
+            check(alpha > 0, "the enlarged desktop note paints its surface beyond the former 460-point limit")
+        } else {
+            check(false, "the enlarged desktop note can be rendered for layout verification")
+        }
+
+        let desktopExcludedPlan = DeckLayout.plan(
+            notes: first.notes,
+            activeNoteID: nil,
+            isExpanded: false,
+            availableHeight: 800,
+            excludedNoteIDs: [first.notes[0].id]
+        )
+        check(
+            !desktopExcludedPlan.slots.compactMap { $0 }.contains(first.notes[0].id)
+                && !desktopExcludedPlan.overflowIDs.contains(first.notes[0].id),
+            "a desktop-presented note has no duplicate entry in the edge deck"
+        )
+        check(
+            desktopExcludedPlan.slots[0] == nil
+                && desktopExcludedPlan.slots[1] == first.notes[1].id,
+            "a desktop-presented note reserves its slot so later edge tabs do not jump"
+        )
+        let filledDesktopExcludedPlan = DeckLayout.plan(
+            notes: tenNotes,
+            activeNoteID: nil,
+            isExpanded: false,
+            availableHeight: 800,
+            excludedNoteIDs: [tenNotes[0].id]
+        )
+        check(
+            filledDesktopExcludedPlan.slots[0] == nil
+                && filledDesktopExcludedPlan.slots[1] == tenNotes[1].id
+                && filledDesktopExcludedPlan.slots.compactMap { $0 }.count == 4,
+            "reserved desktop slots use spare vertical space without shifting tabs or reducing the configured visible count"
+        )
         let reorderStore = NotesStore(fileURL: folder.appendingPathComponent("reorder.json"))
         let adjacentOrder = reorderStore.notes.map(\.id)
         reorderStore.moveNote(adjacentOrder[0], to: 1)
@@ -172,6 +374,28 @@ enum SelfCheck {
         first.presentOnDesktop(originalFirstID)
         check(first.desktopNoteIDs == [originalFirstID], "the global expand action creates an independent desktop note")
         check(!first.isExpanded, "expanding to the desktop collapses the edge editor")
+        first.presentOnDesktop(originalFirstID)
+        check(first.desktopNoteIDs.isEmpty, "invoking desktop presentation again returns the note to its edge tab")
+        check(
+            first.deckState == .noteOpen(originalFirstID),
+            "returning a desktop note restores its previously open edge editor"
+        )
+        check(
+            PanelCoordinator.desktopWindowMaximumSize.width > PanelCoordinator.desktopWindowInitialSize.width
+                && PanelCoordinator.desktopWindowMaximumSize.height > PanelCoordinator.desktopWindowInitialSize.height,
+            "desktop notes can resize beyond their 460 by 380 default size"
+        )
+        first.presentOnDesktop(originalFirstID)
+        check(
+            !PanelCoordinator.desktopWindowStyleMask.contains(.closable)
+                && !PanelCoordinator.desktopWindowStyleMask.contains(.miniaturizable),
+            "desktop notes omit close and minimize window controls"
+        )
+        check(
+            PanelCoordinator.desktopWindowLevel(isPinned: false) == .normal
+                && PanelCoordinator.desktopWindowLevel(isPinned: true) == .floating,
+            "pinning changes the native desktop note window level"
+        )
         first.select(originalSecondID)
         let customGradient = NoteGradient(startHex: "#123456", endHex: "#ABCDEF")
         let desktopDueDate = Date(timeIntervalSince1970: 1_700_000_000)
@@ -246,7 +470,7 @@ enum SelfCheck {
         third.restoreArchived(originalFirstID)
         check(third.notes.contains(where: { $0.id == originalFirstID }), "an archived note can be restored")
 
-        print("DockNotes self-checks passed: ID-scoped editing, deck state, drag preview/order, archive library, fonts, outside-click, overflow, RGB/Hex, localization, tools, persistence")
+        print("DockNotes self-checks passed: AI configuration, Obsidian backup, ID-scoped editing, deck state, drag preview/order, archive library, fonts, outside-click, overflow, RGB/Hex, localization, tools, persistence")
         fflush(stdout)
         exit(EXIT_SUCCESS)
     }

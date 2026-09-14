@@ -24,17 +24,91 @@ struct DesktopNoteWindowView: View {
     @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
     var body: some View {
-        Group {
-            if let note = store.note(id: noteID) {
-                NoteCard(
-                    note: note,
-                    store: store,
-                    settings: settings,
-                    closeAction: { store.closeDesktopNote(noteID) }
-                )
+        ZStack(alignment: .bottomTrailing) {
+            GeometryReader { geometry in
+                Group {
+                    if let note = store.note(id: noteID) {
+                        NoteCard(
+                            note: note,
+                            store: store,
+                            settings: settings,
+                            closeAction: { store.closeDesktopNote(noteID) }
+                        )
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .opacity(settings.expandedOpacity)
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
+
+            DesktopWindowResizeGrip()
+                .frame(width: 18, height: 18)
+                .overlay {
+                    Image(systemName: "arrow.down.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Color.black.opacity(0.28))
+                        .allowsHitTesting(false)
+                }
+                .padding(2)
         }
-        .frame(width: 460, height: 380)
+    }
+}
+
+private struct DesktopWindowResizeGrip: NSViewRepresentable {
+    func makeNSView(context: Context) -> DesktopWindowResizeGripView {
+        DesktopWindowResizeGripView()
+    }
+
+    func updateNSView(_ nsView: DesktopWindowResizeGripView, context: Context) {}
+}
+
+private final class DesktopWindowResizeGripView: NSView {
+    private var initialWindowFrame: NSRect?
+    private var initialMouseLocation: NSPoint?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        initialWindowFrame = window.frame
+        initialMouseLocation = NSEvent.mouseLocation
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window,
+              let initialWindowFrame,
+              let initialMouseLocation else { return }
+        let current = NSEvent.mouseLocation
+        let width = min(
+            max(initialWindowFrame.width + current.x - initialMouseLocation.x, PanelCoordinator.desktopWindowMinimumSize.width),
+            PanelCoordinator.desktopWindowMaximumSize.width
+        )
+        let height = min(
+            max(initialWindowFrame.height - current.y + initialMouseLocation.y, PanelCoordinator.desktopWindowMinimumSize.height),
+            PanelCoordinator.desktopWindowMaximumSize.height
+        )
+        let frame = NSRect(
+            x: initialWindowFrame.minX,
+            y: initialWindowFrame.maxY - height,
+            width: width,
+            height: height
+        )
+        if let desktopWindow = window as? DesktopNoteWindow {
+            desktopWindow.setExplicitFrame(frame, display: true)
+        } else {
+            window.setFrame(frame, display: true)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        initialWindowFrame = nil
+        initialMouseLocation = nil
     }
 }
 
@@ -52,7 +126,8 @@ struct DeckWindowView: View {
             activeNoteID: store.activeNoteID,
             isExpanded: store.isExpanded,
             availableHeight: availableHeight,
-            preferredVisibleCount: settings.visibleTabCount
+            preferredVisibleCount: settings.visibleTabCount,
+            excludedNoteIDs: Set(store.desktopNoteIDs)
         )
     }
 
@@ -587,12 +662,20 @@ private struct NoteCard: View {
                     .stroke(Color.black.opacity(0.075), lineWidth: 0.65)
             }
         }
-        .frame(width: 460, height: 380)
+        // The caller owns the card's dimensions. The edge editor proposes its
+        // fixed 460 x 380 size, while a detached desktop window can grow well
+        // beyond that default and the complete note surface follows it.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var toolbar: some View {
         HStack(spacing: 7) {
-            tinyButton("arrow.up.left.and.arrow.down.right", label: settings.text(.openOnDesktop)) {
+            let isDesktopNote = store.desktopNoteIDs.contains(note.id)
+            tinyButton(
+                isDesktopNote ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                label: settings.text(isDesktopNote ? .returnToEdge : .openOnDesktop),
+                isActive: isDesktopNote
+            ) {
                 store.presentOnDesktop(note.id)
             }
 
@@ -624,8 +707,13 @@ private struct NoteCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize()
 
-            tinyButton("pin", label: settings.text(.pin)) { store.togglePinned(note.id) }
-                .foregroundStyle(note.isPinned ? Color.black : Color.black.opacity(0.46))
+            tinyButton(
+                note.isPinned ? "pin.fill" : "pin",
+                label: settings.text(note.isPinned ? .unpin : .pin),
+                isActive: note.isPinned
+            ) {
+                store.togglePinned(note.id)
+            }
             tinyButton("checklist", label: settings.text(.task)) { store.insertTask(for: note.id) }
             tinyButton("magnifyingglass", label: settings.text(.search)) { isFindPresented.toggle() }
                 .popover(isPresented: $isFindPresented, arrowEdge: .top) {
@@ -641,7 +729,7 @@ private struct NoteCard: View {
             .foregroundStyle(dictation.isRecording ? Color.red : Color.black.opacity(0.46))
             tinyButton("sparkles", label: settings.text(.askAI)) { isAIInfoPresented.toggle() }
                 .popover(isPresented: $isAIInfoPresented, arrowEdge: .top) {
-                    AIInfoPopover(settings: settings)
+                    AIAssistantPopover(note: note, store: store, settings: settings)
                 }
         }
         .padding(.horizontal, 14)
@@ -706,7 +794,13 @@ private struct NoteCard: View {
             }
 
             Spacer()
-            footerButton(settings.text(.archive)) { store.archive(note.id) }
+            footerButton(settings.text(.archive)) {
+                store.archive(
+                    note.id,
+                    obsidianDirectory: settings.obsidianVaultURL,
+                    obsidianBackupEnabled: settings.obsidianBackupEnabled
+                )
+            }
             footerButton(settings.text(.delete)) { store.delete(note.id) }
             footerButton(settings.text(.close)) {
                 if let closeAction {
@@ -720,15 +814,24 @@ private struct NoteCard: View {
         .frame(height: 43)
     }
 
-    private func tinyButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+    private func tinyButton(
+        _ symbol: String,
+        label: String,
+        isActive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .medium))
                 .frame(width: 17, height: 22)
+                .background(
+                    isActive ? Color.white.opacity(0.60) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.black.opacity(0.46))
+        .foregroundStyle(isActive ? Color.black.opacity(0.88) : Color.black.opacity(0.46))
         .help(label)
         .accessibilityLabel(label)
     }
@@ -968,20 +1071,131 @@ private struct FindPopover: View {
 
 }
 
-private struct AIInfoPopover: View {
+private struct AIAssistantPopover: View {
+    let note: DockNote
+    @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
+    @State private var prompt = ""
+    @State private var response = ""
+    @State private var errorMessage = ""
+    @State private var isLoading = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(settings.text(.askAI), systemImage: "sparkles")
-                .font(.system(size: 13, weight: .bold))
-            Text(settings.text(.aiNotConfigured))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(settings.text(.askAI), systemImage: "sparkles")
+                    .font(.system(size: 14, weight: .bold))
+                Spacer()
+                if !settings.aiModel.isEmpty {
+                    Text(settings.aiModel)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            if settings.isAIConfigured {
+                TextEditor(text: $prompt)
+                    .font(.system(size: 12))
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(height: 68)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(alignment: .topLeading) {
+                        if prompt.isEmpty {
+                            Text(settings.text(.aiPrompt))
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 15)
+                                .allowsHitTesting(false)
+                        }
+                    }
+
+                HStack {
+                    Spacer()
+                    Button(settings.text(.send)) { sendRequest() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
+                }
+
+                if isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(settings.text(.aiResponse)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                } else if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !response.isEmpty {
+                    Text(settings.text(.aiResponse)).font(.system(size: 11, weight: .semibold))
+                    ScrollView {
+                        Text(response)
+                            .font(.system(size: 12))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 145)
+                    HStack {
+                        Button(settings.text(.copy)) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(response, forType: .string)
+                        }
+                        Spacer()
+                        Button(settings.text(.appendToNote)) {
+                            let currentBody = store.note(id: note.id)?.body ?? note.body
+                            let separator = currentBody.isEmpty || currentBody.hasSuffix("\n") ? "" : "\n\n"
+                            store.updateBody(currentBody + separator + response, for: note.id)
+                        }
+                    }
+                }
+            } else {
+                Text(settings.text(.aiNotConfigured))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(settings.text(.openAISettings)) {
+                    store.collapseActive(keepDeckOpen: settings.keepDeckOpen)
+                    store.presentSettings()
+                }
+                    .buttonStyle(.borderedProminent)
+            }
         }
-        .padding(14)
-        .frame(width: 250)
+        .padding(16)
+        .frame(width: 360)
+    }
+
+    private func sendRequest() {
+        let requestPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestPrompt.isEmpty else { return }
+        isLoading = true
+        response = ""
+        errorMessage = ""
+        let configuration = AIConfiguration(
+            provider: settings.aiProvider,
+            endpoint: settings.aiEndpoint,
+            model: settings.aiModel,
+            apiKey: settings.aiAPIKey
+        )
+        Task {
+            do {
+                response = try await AIClient.ask(
+                    configuration: configuration,
+                    note: store.note(id: note.id) ?? note,
+                    prompt: requestPrompt,
+                    language: settings.language
+                )
+            } catch {
+                if let aiError = error as? AIClientError {
+                    errorMessage = aiError.userMessage(language: settings.language)
+                } else {
+                    errorMessage = error.localizedDescription
+                }
+            }
+            isLoading = false
+        }
     }
 }
 
@@ -1237,6 +1451,8 @@ struct SettingsWindowView: View {
         case general
         case deck
         case notes
+        case ai
+        case archive
     }
 
     @ObservedObject var store: NotesStore
@@ -1249,6 +1465,8 @@ struct SettingsWindowView: View {
                 settingsTab(.general, symbol: "gearshape", title: settings.text(.general))
                 settingsTab(.deck, symbol: "rectangle.stack", title: settings.text(.deck))
                 settingsTab(.notes, symbol: "note.text", title: settings.text(.notes))
+                settingsTab(.ai, symbol: "sparkles", title: settings.text(.ai))
+                settingsTab(.archive, symbol: "archivebox", title: settings.text(.archive))
                 Spacer()
             }
             .padding(.horizontal, 24)
@@ -1262,12 +1480,14 @@ struct SettingsWindowView: View {
                 case .general: generalSettings
                 case .deck: deckSettings
                 case .notes: noteSettings
+                case .ai: aiSettings
+                case .archive: archiveSettings
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(28)
         }
-        .frame(width: 620, height: 470)
+        .frame(width: 680, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -1351,6 +1571,106 @@ struct SettingsWindowView: View {
             }
             .padding(16)
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private var aiSettings: some View {
+        settingsPage(title: settings.text(.ai), subtitle: settings.text(.aiSettingsHint)) {
+            formRow(title: settings.text(.aiProvider)) {
+                Picker("", selection: $settings.aiProvider) {
+                    Text(settings.text(.openAICompatible)).tag(AIProvider.openAICompatible)
+                    Text(settings.text(.anthropic)).tag(AIProvider.anthropic)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 390)
+            }
+            formRow(title: settings.text(.aiServiceURL)) {
+                TextField(
+                    settings.aiProvider == .anthropic
+                        ? "https://api.anthropic.com/v1"
+                        : "https://api.openai.com/v1",
+                    text: $settings.aiEndpoint
+                )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 390)
+            }
+            formRow(title: settings.text(.aiModel)) {
+                TextField(settings.aiProvider == .anthropic ? "claude-model-name" : "model-name", text: $settings.aiModel)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 390)
+            }
+            formRow(title: settings.text(.aiAPIKey)) {
+                SecureField("sk-…", text: $settings.aiAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 390)
+            }
+            Text(settings.text(.aiAPIKeyHint))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 150)
+        }
+    }
+
+    private var archiveSettings: some View {
+        settingsPage(title: settings.text(.archiveSettings), subtitle: settings.text(.archiveSettingsHint)) {
+            formRow(title: settings.text(.obsidianBackup)) {
+                Toggle("", isOn: $settings.obsidianBackupEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            formRow(title: settings.text(.obsidianFolder)) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Text(settings.obsidianVaultPath.isEmpty ? settings.text(.noFolderSelected) : settings.obsidianVaultPath)
+                            .font(.system(size: 11))
+                            .foregroundStyle(settings.obsidianVaultPath.isEmpty ? .secondary : .primary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .frame(width: 280, alignment: .leading)
+                        Button(settings.text(.chooseFolder)) { chooseObsidianFolder() }
+                    }
+                    Text(settings.text(.obsidianBackupHint))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if let url = store.lastObsidianBackupURL {
+                Label("\(settings.text(.lastBackup)): \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.green)
+                    .padding(.leading, 150)
+            } else if let failure = store.lastObsidianBackupError {
+                Label("\(settings.text(.backupFailed)): \(obsidianFailureText(failure))", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .padding(.leading, 150)
+            }
+        }
+    }
+
+    private func chooseObsidianFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = settings.text(.chooseFolder)
+        if let existing = settings.obsidianVaultURL {
+            panel.directoryURL = existing
+        }
+        if panel.runModal() == .OK {
+            settings.setObsidianVault(panel.url)
+            settings.obsidianBackupEnabled = true
+        }
+    }
+
+    private func obsidianFailureText(_ failure: ObsidianBackupFailure) -> String {
+        switch failure {
+        case .missingFolder: settings.text(.noFolderSelected)
+        case let .writeFailed(message): message
         }
     }
 

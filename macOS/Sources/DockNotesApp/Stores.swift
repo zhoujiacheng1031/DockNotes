@@ -1,11 +1,31 @@
 import Combine
 import Foundation
+import Security
 
 enum DeckEdge: String, CaseIterable, Identifiable {
     case left
     case right
 
     var id: Self { self }
+}
+
+enum AIProvider: String, CaseIterable, Identifiable, Sendable {
+    case openAICompatible
+    case anthropic
+
+    var id: Self { self }
+
+    var endpointPath: String {
+        switch self {
+        case .openAICompatible: "chat/completions"
+        case .anthropic: "messages"
+        }
+    }
+}
+
+enum ObsidianBackupFailure: Equatable {
+    case missingFolder
+    case writeFailed(String)
 }
 
 @MainActor
@@ -17,6 +37,14 @@ final class AppSettings: ObservableObject {
         static let keepDeckOpen = "docknotes.deck.keepOpen"
         static let visibleTabCount = "docknotes.deck.visibleTabCount"
         static let deckEdge = "docknotes.deck.edge"
+        static let aiEndpoint = "docknotes.ai.endpoint"
+        static let aiModel = "docknotes.ai.model"
+        static let aiProvider = "docknotes.ai.provider"
+        static let anthropicEndpoint = "docknotes.ai.anthropic.endpoint"
+        static let anthropicModel = "docknotes.ai.anthropic.model"
+        static let obsidianBackupEnabled = "docknotes.archive.obsidian.enabled"
+        static let obsidianVaultPath = "docknotes.archive.obsidian.path"
+        static let obsidianVaultBookmark = "docknotes.archive.obsidian.bookmark"
     }
 
     @Published var language: AppLanguage { didSet { defaults.set(language.rawValue, forKey: Key.language) } }
@@ -31,6 +59,26 @@ final class AppSettings: ObservableObject {
         }
     }
     @Published var deckEdge: DeckEdge { didSet { defaults.set(deckEdge.rawValue, forKey: Key.deckEdge) } }
+    @Published var aiProvider: AIProvider {
+        didSet {
+            guard aiProvider != oldValue else { return }
+            defaults.set(aiProvider.rawValue, forKey: Key.aiProvider)
+            aiEndpoint = storedAIEndpoint(for: aiProvider)
+            aiModel = storedAIModel(for: aiProvider)
+            aiAPIKey = AIKeychain.read(provider: aiProvider) ?? ""
+        }
+    }
+    @Published var aiEndpoint: String {
+        didSet { defaults.set(aiEndpoint, forKey: endpointKey(for: aiProvider)) }
+    }
+    @Published var aiModel: String {
+        didSet { defaults.set(aiModel, forKey: modelKey(for: aiProvider)) }
+    }
+    @Published var aiAPIKey: String { didSet { AIKeychain.write(aiAPIKey, provider: aiProvider) } }
+    @Published var obsidianBackupEnabled: Bool {
+        didSet { defaults.set(obsidianBackupEnabled, forKey: Key.obsidianBackupEnabled) }
+    }
+    @Published private(set) var obsidianVaultPath: String
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -43,11 +91,120 @@ final class AppSettings: ObservableObject {
             ? 4
             : Self.clampVisibleTabCount(defaults.integer(forKey: Key.visibleTabCount))
         deckEdge = DeckEdge(rawValue: defaults.string(forKey: Key.deckEdge) ?? "") ?? .right
+        aiProvider = AIProvider(rawValue: defaults.string(forKey: Key.aiProvider) ?? "") ?? .openAICompatible
+        aiEndpoint = ""
+        aiModel = ""
+        aiAPIKey = ""
+        obsidianBackupEnabled = defaults.bool(forKey: Key.obsidianBackupEnabled)
+        obsidianVaultPath = defaults.string(forKey: Key.obsidianVaultPath) ?? ""
+        aiEndpoint = storedAIEndpoint(for: aiProvider)
+        aiModel = storedAIModel(for: aiProvider)
+        aiAPIKey = AIKeychain.read(provider: aiProvider) ?? ""
     }
 
     static func clamp(_ value: Double) -> Double { min(max(value, 0.20), 1.0) }
     static func clampVisibleTabCount(_ value: Int) -> Int { min(max(value, 1), 7) }
     func text(_ key: L10nKey) -> String { L10n.text(key, language: language) }
+
+    var isAIConfigured: Bool {
+        !aiEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !aiModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var obsidianVaultURL: URL? {
+        if let bookmark = defaults.data(forKey: Key.obsidianVaultBookmark) {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                return url
+            }
+        }
+        guard !obsidianVaultPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: obsidianVaultPath, isDirectory: true)
+    }
+
+    func setObsidianVault(_ url: URL?) {
+        guard let url else {
+            obsidianVaultPath = ""
+            defaults.removeObject(forKey: Key.obsidianVaultPath)
+            defaults.removeObject(forKey: Key.obsidianVaultBookmark)
+            return
+        }
+        obsidianVaultPath = url.path
+        defaults.set(url.path, forKey: Key.obsidianVaultPath)
+        if let bookmark = try? url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            defaults.set(bookmark, forKey: Key.obsidianVaultBookmark)
+        }
+    }
+
+    private func endpointKey(for provider: AIProvider) -> String {
+        provider == .anthropic ? Key.anthropicEndpoint : Key.aiEndpoint
+    }
+
+    private func modelKey(for provider: AIProvider) -> String {
+        provider == .anthropic ? Key.anthropicModel : Key.aiModel
+    }
+
+    private func storedAIEndpoint(for provider: AIProvider) -> String {
+        defaults.string(forKey: endpointKey(for: provider))
+            ?? (provider == .anthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1")
+    }
+
+    private func storedAIModel(for provider: AIProvider) -> String {
+        defaults.string(forKey: modelKey(for: provider)) ?? ""
+    }
+}
+
+private enum AIKeychain {
+    private static let service = "com.local.DockNotes.ai"
+    private static let legacyAccount = "openai-compatible-api-key"
+
+    static func read(provider: AIProvider) -> String? {
+        read(account: provider.rawValue)
+            ?? (provider == .openAICompatible ? read(account: legacyAccount) : nil)
+    }
+
+    private static func read(account: String) -> String? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func write(_ value: String, provider: AIProvider) {
+        let account = provider.rawValue
+        let identity: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        if value.isEmpty {
+            SecItemDelete(identity as CFDictionary)
+            return
+        }
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(identity as CFDictionary, [kSecValueData: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = identity
+            item[kSecValueData] = data
+            SecItemAdd(item as CFDictionary, nil)
+        }
+    }
 }
 
 @MainActor
@@ -59,6 +216,8 @@ final class NotesStore: ObservableObject {
     @Published var isPreferencesPresented = false
     @Published var isLibraryPresented = false
     @Published private(set) var desktopNoteIDs: [DockNote.ID] = []
+    @Published private(set) var lastObsidianBackupURL: URL?
+    @Published private(set) var lastObsidianBackupError: ObsidianBackupFailure?
     private var restTask: Task<Void, Never>?
     private let fileURL: URL
     private let encoder: JSONEncoder
@@ -152,7 +311,13 @@ final class NotesStore: ObservableObject {
 
     func presentOnDesktop(_ id: DockNote.ID) {
         guard notes.contains(where: { $0.id == id }) else { return }
-        if !desktopNoteIDs.contains(id) { desktopNoteIDs.append(id) }
+        if desktopNoteIDs.contains(id) {
+            desktopNoteIDs.removeAll { $0 == id }
+            activeNoteID = id
+            deckState = .noteOpen(id)
+            return
+        }
+        desktopNoteIDs.append(id)
         activeNoteID = id
         deckState = .fanned
     }
@@ -235,11 +400,29 @@ final class NotesStore: ObservableObject {
         archive(activeNoteID)
     }
 
-    func archive(_ noteID: DockNote.ID) {
+    func archive(
+        _ noteID: DockNote.ID,
+        obsidianDirectory: URL? = nil,
+        obsidianBackupEnabled: Bool = false
+    ) {
         guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
         var note = notes.remove(at: index)
         note.isArchived = true
         note.modifiedAt = .now
+        if obsidianBackupEnabled {
+            if let obsidianDirectory {
+                do {
+                    lastObsidianBackupURL = try ObsidianArchiveExporter.export(note, to: obsidianDirectory)
+                    lastObsidianBackupError = nil
+                } catch {
+                    lastObsidianBackupURL = nil
+                    lastObsidianBackupError = .writeFailed(error.localizedDescription)
+                }
+            } else {
+                lastObsidianBackupURL = nil
+                lastObsidianBackupError = .missingFolder
+            }
+        }
         archivedNotes.insert(note, at: 0)
         desktopNoteIDs.removeAll { $0 == noteID }
         if activeNoteID == noteID {

@@ -62,6 +62,8 @@ enum L10nKey: String {
     case fontMonospaced
     case fontHandwriting
     case openOnDesktop
+    case returnToEdge
+    case unpin
     case gradient
     case solidColor
     case startColor
@@ -70,6 +72,33 @@ enum L10nKey: String {
     case deckPosition
     case leftEdge
     case rightEdge
+    case ai
+    case aiSettingsHint
+    case aiServiceURL
+    case aiProvider
+    case openAICompatible
+    case anthropic
+    case aiModel
+    case aiAPIKey
+    case aiAPIKeyHint
+    case aiPrompt
+    case send
+    case aiResponse
+    case openAISettings
+    case appendToNote
+    case copy
+    case archiveSettings
+    case archiveSettingsHint
+    case obsidianBackup
+    case obsidianFolder
+    case chooseFolder
+    case noFolderSelected
+    case obsidianBackupHint
+    case lastBackup
+    case backupFailed
+    case aiInvalidEndpoint
+    case aiInvalidResponse
+    case aiRequestFailedCode
 }
 
 enum L10n {
@@ -135,6 +164,8 @@ enum L10n {
         .fontMonospaced: "等宽",
         .fontHandwriting: "手写",
         .openOnDesktop: "展开为桌面便签",
+        .returnToEdge: "收回侧边标签",
+        .unpin: "取消置顶",
         .gradient: "渐变",
         .solidColor: "纯色",
         .startColor: "起始色",
@@ -142,7 +173,34 @@ enum L10n {
         .visibleTabs: "可见标签",
         .deckPosition: "停靠位置",
         .leftEdge: "桌面左侧",
-        .rightEdge: "桌面右侧"
+        .rightEdge: "桌面右侧",
+        .ai: "AI 模型",
+        .aiSettingsHint: "支持 OpenAI 兼容接口与 Anthropic Messages API；仅在你主动提问时读取当前便签。",
+        .aiServiceURL: "服务地址",
+        .aiProvider: "提供商",
+        .openAICompatible: "OpenAI 兼容",
+        .anthropic: "Anthropic",
+        .aiModel: "模型名称",
+        .aiAPIKey: "API Key（可选）",
+        .aiAPIKeyHint: "API Key 保存在 macOS 钥匙串中，不写入便签文件。",
+        .aiPrompt: "询问、总结或改写当前便签…",
+        .send: "发送",
+        .aiResponse: "AI 回复",
+        .openAISettings: "打开 AI 设置",
+        .appendToNote: "追加到便签",
+        .copy: "复制",
+        .archiveSettings: "归档与备份",
+        .archiveSettingsHint: "DockNotes 始终保留应用内归档，也可以同步备份为 Obsidian Markdown。",
+        .obsidianBackup: "备份到 Obsidian",
+        .obsidianFolder: "Vault / 文件夹",
+        .chooseFolder: "选择文件夹…",
+        .noFolderSelected: "尚未选择文件夹",
+        .obsidianBackupHint: "归档时写入 Markdown，并维护 [[DockNotes Archive Index]] 索引。",
+        .lastBackup: "最近备份",
+        .backupFailed: "备份失败",
+        .aiInvalidEndpoint: "AI 服务地址无效。",
+        .aiInvalidResponse: "AI 服务返回了无法读取的响应。",
+        .aiRequestFailedCode: "AI 请求失败（HTTP %d）。"
     ]
 
     private static let en: [L10nKey: String] = [
@@ -207,6 +265,8 @@ enum L10n {
         .fontMonospaced: "Monospaced",
         .fontHandwriting: "Handwriting",
         .openOnDesktop: "Open as Desktop Note",
+        .returnToEdge: "Return to Edge",
+        .unpin: "Unpin",
         .gradient: "Gradient",
         .solidColor: "Solid",
         .startColor: "Start Color",
@@ -214,7 +274,34 @@ enum L10n {
         .visibleTabs: "Visible Tabs",
         .deckPosition: "Dock Side",
         .leftEdge: "Left",
-        .rightEdge: "Right"
+        .rightEdge: "Right",
+        .ai: "AI Model",
+        .aiSettingsHint: "Use an OpenAI-compatible service or Anthropic Messages API. AI reads the note only when you ask.",
+        .aiServiceURL: "Service URL",
+        .aiProvider: "Provider",
+        .openAICompatible: "OpenAI Compatible",
+        .anthropic: "Anthropic",
+        .aiModel: "Model",
+        .aiAPIKey: "API Key (Optional)",
+        .aiAPIKeyHint: "Your API key is stored in macOS Keychain, never in the notes file.",
+        .aiPrompt: "Ask, summarize, or rewrite this note…",
+        .send: "Send",
+        .aiResponse: "AI Response",
+        .openAISettings: "Open AI Settings",
+        .appendToNote: "Append to Note",
+        .copy: "Copy",
+        .archiveSettings: "Archive & Backup",
+        .archiveSettingsHint: "DockNotes always keeps its local archive and can also back up Obsidian-compatible Markdown.",
+        .obsidianBackup: "Back up to Obsidian",
+        .obsidianFolder: "Vault / Folder",
+        .chooseFolder: "Choose Folder…",
+        .noFolderSelected: "No folder selected",
+        .obsidianBackupHint: "Writes Markdown on archive and maintains a [[DockNotes Archive Index]] note.",
+        .lastBackup: "Last Backup",
+        .backupFailed: "Backup Failed",
+        .aiInvalidEndpoint: "The AI service URL is invalid.",
+        .aiInvalidResponse: "The AI service returned an unreadable response.",
+        .aiRequestFailedCode: "AI request failed (HTTP %d)."
     ]
 
     static func text(_ key: L10nKey, language: AppLanguage) -> String {

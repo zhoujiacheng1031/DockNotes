@@ -9,6 +9,14 @@ import SwiftUI
 final class PanelCoordinator: NSObject, NSWindowDelegate {
     static let noteWindowLevel = NSWindow.Level.floating
     static let deckWindowLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+    static let desktopWindowStyleMask: NSWindow.StyleMask = [.borderless, .resizable]
+    static let desktopWindowInitialSize = CGSize(width: 460, height: 380)
+    static let desktopWindowMinimumSize = CGSize(width: 320, height: 260)
+    static let desktopWindowMaximumSize = CGSize(width: 900, height: 720)
+
+    static func desktopWindowLevel(isPinned: Bool) -> NSWindow.Level {
+        isPinned ? .floating : .normal
+    }
 
     static func localClickIsOutsideApp(hasWindow: Bool) -> Bool {
         !hasWindow
@@ -19,7 +27,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         static let deckWidth: CGFloat = DeckLayout.windowWidth
         static let visibleDeckWidth: CGFloat = DeckLayout.windowWidth
         static let noteDeckGap: CGFloat = DeckLayout.windowWidth
-        static let settingsSize = CGSize(width: 620, height: 470)
+        static let settingsSize = CGSize(width: 680, height: 520)
         static let librarySize = CGSize(width: 680, height: 520)
     }
 
@@ -34,6 +42,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     private var globalMouseMonitor: Any?
     private var workspaceActivationObserver: Any?
     private var cancellables = Set<AnyCancellable>()
+    private var liveResizingDesktopWindows = Set<ObjectIdentifier>()
 
     init(store: NotesStore, settings: AppSettings) {
         self.store = store
@@ -80,6 +89,32 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             desktopNoteWindows.removeValue(forKey: pair.key)
             store.closeDesktopNote(pair.key)
         }
+    }
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        guard let window = notification.object as? DesktopNoteWindow else { return }
+        liveResizingDesktopWindows.insert(ObjectIdentifier(window))
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let window = notification.object as? DesktopNoteWindow else { return }
+        liveResizingDesktopWindows.remove(ObjectIdentifier(window))
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard let desktopWindow = sender as? DesktopNoteWindow else { return frameSize }
+        let isUserResize = desktopWindow.inLiveResize
+            || liveResizingDesktopWindows.contains(ObjectIdentifier(desktopWindow))
+        guard isUserResize || desktopWindow.permitsExplicitResize else {
+            // NSHostingView may asynchronously push its fitting/minimum size
+            // back into the window after presentation. It must not override
+            // the explicit native window frame.
+            return desktopWindow.frame.size
+        }
+        return NSSize(
+            width: min(max(frameSize.width, Self.desktopWindowMinimumSize.width), Self.desktopWindowMaximumSize.width),
+            height: min(max(frameSize.height, Self.desktopWindowMinimumSize.height), Self.desktopWindowMaximumSize.height)
+        )
     }
 
     private func createWindows() {
@@ -148,6 +183,12 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             .sink { [weak self] ids in self?.syncDesktopNoteWindows(with: ids) }
             .store(in: &cancellables)
 
+        store.$notes
+            .sink { [weak self] notes in
+                self?.syncDesktopNoteWindowAttributes(with: notes)
+            }
+            .store(in: &cancellables)
+
         settings.$language
             .removeDuplicates()
             .sink { [weak self] _ in
@@ -203,36 +244,66 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         return window
     }
 
-    private func makeDesktopNoteWindow(for noteID: DockNote.ID) -> NSWindow {
-        let hostingView = NSHostingView(rootView: DesktopNoteWindowView(noteID: noteID, store: store, settings: settings))
-        let size = CGSize(width: 460, height: 380)
-        let window = NSWindow(
+    func makeDesktopNoteWindow(for noteID: DockNote.ID) -> NSWindow {
+        let hostingView = TransparentHostingView(
+            rootView: DesktopNoteWindowView(noteID: noteID, store: store, settings: settings)
+        )
+        hostingView.sizingOptions = []
+        let size = Self.desktopWindowInitialSize
+        let containerView = NSView(frame: NSRect(origin: .zero, size: size))
+        containerView.autoresizesSubviews = true
+        containerView.wantsLayer = true
+        containerView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.frame = containerView.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        containerView.addSubview(hostingView)
+        let window = DesktopNoteWindow(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: Self.desktopWindowStyleMask,
             backing: .buffered,
             defer: false
         )
         window.title = store.note(id: noteID)?.title ?? "DockNotes"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.contentView = hostingView
-        window.minSize = size
-        window.maxSize = size
-        window.level = .floating
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        // Keep SwiftUI's intrinsic/fitting size out of the native live-resize
+        // negotiation. The neutral AppKit container owns the window bounds;
+        // the hosting view only follows those bounds.
+        window.contentView = containerView
+        window.minSize = Self.desktopWindowMinimumSize
+        window.maxSize = Self.desktopWindowMaximumSize
+        window.level = Self.desktopWindowLevel(isPinned: store.note(id: noteID)?.isPinned == true)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
         window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false
+        // With a full-content titlebar, treating the entire note as a drag
+        // surface competes with AppKit's resize hit regions at the edges.
+        window.isMovable = true
         window.isMovableByWindowBackground = true
+        window.resizeIncrements = NSSize(width: 1, height: 1)
+        window.preservesContentDuringLiveResize = true
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.delegate = self
+        // Assigning an NSHostingView can let its fitting size replace the
+        // requested window size. Reassert the product default only after all
+        // hosting and AppKit constraints have been installed.
+        window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
         window.center()
         window.setFrameOrigin(NSPoint(x: window.frame.origin.x - CGFloat(desktopNoteWindows.count * 24), y: window.frame.origin.y - CGFloat(desktopNoteWindows.count * 24)))
+        window.preventImplicitResizing()
         return window
     }
 
     private func syncDesktopNoteWindows(with ids: [DockNote.ID]) {
         let requested = Set(ids)
-        for (id, window) in desktopNoteWindows where !requested.contains(id) {
-            window.orderOut(nil)
+        let removedIDs = desktopNoteWindows.keys.filter { !requested.contains($0) }
+        for id in removedIDs {
+            desktopNoteWindows[id]?.orderOut(nil)
             desktopNoteWindows.removeValue(forKey: id)
         }
         for id in ids where desktopNoteWindows[id] == nil {
@@ -242,6 +313,18 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             window.makeKey()
         }
         if !ids.isEmpty { NSApp.activate(ignoringOtherApps: true) }
+    }
+
+    private func syncDesktopNoteWindowAttributes(with notes: [DockNote]) {
+        let notesByID = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, $0) })
+        for (id, window) in desktopNoteWindows {
+            guard let note = notesByID[id] else { continue }
+            window.title = note.title.isEmpty ? "DockNotes" : note.title
+            window.level = Self.desktopWindowLevel(isPinned: note.isPinned)
+            if note.isPinned {
+                window.orderFrontRegardless()
+            }
+        }
     }
 
     private func makeTransparentPanel<Content: View>(size: CGSize, content: Content) -> TransparentPanel {
@@ -402,6 +485,43 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 private final class TransparentPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+final class DesktopNoteWindow: NSWindow {
+    private(set) var permitsExplicitResize = false
+    private var rejectsImplicitResize = false
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    func preventImplicitResizing() {
+        rejectsImplicitResize = true
+    }
+
+    func setExplicitFrame(_ frame: NSRect, display: Bool) {
+        permitsExplicitResize = true
+        setFrame(frame, display: display)
+        permitsExplicitResize = false
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        guard rejectsImplicitResize,
+              !inLiveResize,
+              !permitsExplicitResize,
+              frameRect.size != frame.size else {
+            super.setFrame(frameRect, display: flag)
+            return
+        }
+        // A nested NSHostingView can repeatedly write its minimum fitting
+        // height through this method after the window is already visible.
+        // Preserve the current user/native size while still allowing moves.
+        super.setFrame(NSRect(origin: frameRect.origin, size: frame.size), display: flag)
+    }
+
+    override func setContentSize(_ size: NSSize) {
+        guard !rejectsImplicitResize || inLiveResize || permitsExplicitResize else { return }
+        super.setContentSize(size)
+    }
 }
 
 private final class TransparentHostingView<Content: View>: NSHostingView<Content> {

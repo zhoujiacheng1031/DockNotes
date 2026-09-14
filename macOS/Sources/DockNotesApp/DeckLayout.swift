@@ -43,16 +43,37 @@ enum DeckLayout {
         activeNoteID: UUID?,
         isExpanded: Bool,
         availableHeight: CGFloat,
-        preferredVisibleCount: Int = defaultVisibleTabs
+        preferredVisibleCount: Int = defaultVisibleTabs,
+        excludedNoteIDs: Set<UUID> = []
     ) -> DeckPlan {
-        let capacity = capacity(for: availableHeight, preferredVisibleCount: preferredVisibleCount)
-        let slottedNotes = Array(notes.prefix(capacity))
+        let desiredVisibleCount = capacity(for: availableHeight, preferredVisibleCount: preferredVisibleCount)
+        let physicalSlotCount = capacity(
+            for: availableHeight,
+            preferredVisibleCount: maximumVisibleTabs
+        )
+        // Slots correspond to the canonical note order. A note detached to the
+        // desktop reserves its former slot instead of making every later tab
+        // jump upward. When vertical space remains, later notes fill additional
+        // slots so "Visible Tabs" still counts actual collapsed labels.
+        var slottedNotes: [DockNote] = []
+        var visibleCount = 0
+        for note in notes where slottedNotes.count < physicalSlotCount {
+            slottedNotes.append(note)
+            let hidden = excludedNoteIDs.contains(note.id)
+                || (isExpanded && note.id == activeNoteID)
+            if !hidden { visibleCount += 1 }
+            if visibleCount == desiredVisibleCount { break }
+        }
         let slots = slottedNotes.map { note -> UUID? in
-            isExpanded && note.id == activeNoteID ? nil : note.id
+            if excludedNoteIDs.contains(note.id) { return nil }
+            return isExpanded && note.id == activeNoteID ? nil : note.id
         }
         let overflowIDs = notes
-            .dropFirst(capacity)
-            .filter { !(isExpanded && $0.id == activeNoteID) }
+            .dropFirst(slottedNotes.count)
+            .filter {
+                !excludedNoteIDs.contains($0.id)
+                    && !(isExpanded && $0.id == activeNoteID)
+            }
             .map(\.id)
         return DeckPlan(slots: slots, overflowIDs: overflowIDs)
     }
