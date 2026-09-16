@@ -1,4 +1,151 @@
+import AppKit
 import Foundation
+
+enum DeadlineStatus: Equatable {
+    case upcoming
+    case today
+    case overdue
+}
+
+struct DeadlinePresentation: Equatable {
+    let status: DeadlineStatus
+    let edgeLabel: String
+    let toolbarLabel: String
+
+    static func make(
+        for date: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        language: AppLanguage
+    ) -> DeadlinePresentation {
+        let status: DeadlineStatus
+        if date < now {
+            status = .overdue
+        } else if calendar.isDate(date, inSameDayAs: now) {
+            status = .today
+        } else {
+            status = .upcoming
+        }
+        let time = formatted(date, template: "HH:mm", calendar: calendar)
+        let shortDate = formatted(date, template: "M/d", calendar: calendar)
+        let dateTime = formatted(date, template: "M/d HH:mm", calendar: calendar)
+        switch status {
+        case .today:
+            return DeadlinePresentation(
+                status: status,
+                edgeLabel: time,
+                toolbarLabel: "\(L10n.text(.today, language: language)) \(time)"
+            )
+        case .overdue:
+            return DeadlinePresentation(
+                status: status,
+                edgeLabel: "!\(shortDate)",
+                toolbarLabel: "\(L10n.text(.overdue, language: language)) · \(dateTime)"
+            )
+        case .upcoming:
+            return DeadlinePresentation(status: status, edgeLabel: shortDate, toolbarLabel: dateTime)
+        }
+    }
+
+    private static func formatted(_ date: Date, template: String, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
+    }
+}
+
+enum NoteContentRegion: Hashable {
+    case editor
+    case searchOverlay
+    case aiDrawer
+}
+
+enum NotePresentationPolicy {
+    static func regions(searchVisible: Bool, aiVisible: Bool) -> Set<NoteContentRegion> {
+        var regions: Set<NoteContentRegion> = [.editor]
+        if searchVisible { regions.insert(.searchOverlay) }
+        if aiVisible { regions.insert(.aiDrawer) }
+        return regions
+    }
+
+    static let searchIsOverlay = regions(searchVisible: true, aiVisible: false).contains(.searchOverlay)
+    static let aiKeepsEditorVisible = regions(searchVisible: false, aiVisible: true).contains(.editor)
+}
+
+enum NoteSearchEngine {
+    static func matchRanges(in text: String, query: String) -> [NSRange] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        let source = text as NSString
+        var ranges: [NSRange] = []
+        var remaining = NSRange(location: 0, length: source.length)
+        while remaining.length > 0 {
+            let range = source.range(
+                of: needle,
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: remaining
+            )
+            guard range.location != NSNotFound else { break }
+            ranges.append(range)
+            let nextLocation = NSMaxRange(range)
+            remaining = NSRange(location: nextLocation, length: source.length - nextLocation)
+        }
+        return ranges
+    }
+
+    static func rankedNotes(_ notes: [DockNote], query: String) -> [DockNote] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return notes }
+        return notes.compactMap { note -> (rank: Int, note: DockNote)? in
+            if !matchRanges(in: note.title, query: needle).isEmpty { return (0, note) }
+            if !matchRanges(in: note.body, query: needle).isEmpty { return (1, note) }
+            return nil
+        }
+        .sorted { left, right in
+            if left.rank != right.rank { return left.rank < right.rank }
+            let titleOrder = left.note.title.localizedCaseInsensitiveCompare(right.note.title)
+            if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
+            return left.note.modifiedAt > right.note.modifiedAt
+        }
+        .map(\.note)
+    }
+
+    static func matchesTitle(_ note: DockNote, query: String) -> Bool {
+        !matchRanges(in: note.title, query: query).isEmpty
+    }
+}
+
+enum RichTextBody {
+    static func appendingPlainText(_ suffix: String, to body: String, rtfData: Data?) -> Data? {
+        guard let rtfData,
+              let decoded = try? NSAttributedString(
+                  data: rtfData,
+                  options: [.documentType: NSAttributedString.DocumentType.rtf],
+                  documentAttributes: nil
+              ),
+              decoded.string == body else { return nil }
+
+        let result = NSMutableAttributedString(attributedString: decoded)
+        var baseAttributes: [NSAttributedString.Key: Any] = [:]
+        if decoded.length > 0 {
+            let previous = decoded.attributes(at: decoded.length - 1, effectiveRange: nil)
+            if let font = previous[.font] as? NSFont {
+                baseAttributes[.font] = NSFontManager.shared.convert(font, toNotHaveTrait: .boldFontMask)
+            }
+            if let color = previous[.foregroundColor] as? NSColor {
+                baseAttributes[.foregroundColor] = color
+            }
+        }
+        result.append(NSAttributedString(string: suffix, attributes: baseAttributes))
+        return try? result.data(
+            from: NSRange(location: 0, length: result.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+    }
+}
 
 struct NoteTask: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
@@ -55,6 +202,9 @@ struct DockNote: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var title: String
     var body: String = ""
+    /// RTF is stored alongside `body`: AppKit renders the rich text while
+    /// search, AI, and Markdown export continue to use the portable plain text.
+    var bodyRTF: Data?
     var tasks: [NoteTask] = []
     var colorHex: String = "#F4D36F"
     var gradientEndHex: String?
@@ -67,13 +217,14 @@ struct DockNote: Identifiable, Codable, Equatable, Sendable {
     var modifiedAt: Date = .now
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, body, tasks, colorHex, gradientEndHex, material, isPinned, isArchived, dueDate, fontStyle, fontSize, modifiedAt
+        case id, title, body, bodyRTF, tasks, colorHex, gradientEndHex, material, isPinned, isArchived, dueDate, fontStyle, fontSize, modifiedAt
     }
 
-    init(id: UUID = UUID(), title: String, body: String = "", tasks: [NoteTask] = [], colorHex: String = NotePalette.gradients[0].startHex, gradientEndHex: String? = NotePalette.gradients[0].endHex, material: NoteMaterial = .plain, isPinned: Bool = false, isArchived: Bool = false, dueDate: Date? = nil, fontStyle: NoteFontStyle = .system, fontSize: Double = 15, modifiedAt: Date = .now) {
+    init(id: UUID = UUID(), title: String, body: String = "", bodyRTF: Data? = nil, tasks: [NoteTask] = [], colorHex: String = NotePalette.gradients[0].startHex, gradientEndHex: String? = NotePalette.gradients[0].endHex, material: NoteMaterial = .plain, isPinned: Bool = false, isArchived: Bool = false, dueDate: Date? = nil, fontStyle: NoteFontStyle = .system, fontSize: Double = 15, modifiedAt: Date = .now) {
         self.id = id
         self.title = title
         self.body = body
+        self.bodyRTF = bodyRTF
         self.tasks = tasks
         self.colorHex = colorHex
         self.gradientEndHex = gradientEndHex
@@ -93,6 +244,7 @@ struct DockNote: Identifiable, Codable, Equatable, Sendable {
         tasks = try values.decodeIfPresent([NoteTask].self, forKey: .tasks) ?? []
         body = try values.decodeIfPresent(String.self, forKey: .body)
             ?? tasks.map { ($0.isCompleted ? "✓ " : "□ ") + $0.text }.joined(separator: "\n")
+        bodyRTF = try values.decodeIfPresent(Data.self, forKey: .bodyRTF)
         colorHex = try values.decodeIfPresent(String.self, forKey: .colorHex) ?? "#F4D36F"
         gradientEndHex = try values.decodeIfPresent(String.self, forKey: .gradientEndHex)
         material = try values.decodeIfPresent(NoteMaterial.self, forKey: .material) ?? .plain

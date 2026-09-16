@@ -13,7 +13,19 @@ struct DockNotesApp: App {
             SelfCheck.renderDesktopPreview(to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]))
         } else if let renderIndex = CommandLine.arguments.firstIndex(of: "--render-deck-preview"),
                   CommandLine.arguments.indices.contains(renderIndex + 1) {
-            SelfCheck.renderDeckPreview(to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]))
+            let visibleTabs = CommandLine.arguments.indices.contains(renderIndex + 2)
+                ? Int(CommandLine.arguments[renderIndex + 2]) ?? DeckLayout.defaultVisibleTabs
+                : DeckLayout.defaultVisibleTabs
+            SelfCheck.renderDeckPreview(
+                to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]),
+                visibleTabCount: visibleTabs
+            )
+        } else if let renderIndex = CommandLine.arguments.firstIndex(of: "--render-tab-hover-preview"),
+                  CommandLine.arguments.indices.contains(renderIndex + 1) {
+            SelfCheck.renderTabHoverPreview(to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]))
+        } else if let renderIndex = CommandLine.arguments.firstIndex(of: "--render-ai-preview"),
+                  CommandLine.arguments.indices.contains(renderIndex + 1) {
+            SelfCheck.renderAIPreview(to: URL(fileURLWithPath: CommandLine.arguments[renderIndex + 1]))
         }
     }
 

@@ -345,9 +345,37 @@ final class NotesStore: ObservableObject {
     }
 
     func updateTitle(_ title: String) { mutateActive { $0.title = title } }
-    func updateBody(_ body: String) { mutateActive { $0.body = body } }
+    func updateBody(_ body: String) {
+        mutateActive {
+            $0.body = body
+            $0.bodyRTF = nil
+        }
+    }
     func updateTitle(_ title: String, for noteID: DockNote.ID) { mutate(noteID) { $0.title = title } }
-    func updateBody(_ body: String, for noteID: DockNote.ID) { mutate(noteID) { $0.body = body } }
+    func updateBody(_ body: String, for noteID: DockNote.ID) {
+        mutate(noteID) {
+            $0.body = body
+            $0.bodyRTF = nil
+        }
+    }
+    func updateRichBody(_ body: String, rtfData: Data?, for noteID: DockNote.ID) {
+        mutate(noteID) {
+            $0.body = body
+            $0.bodyRTF = rtfData
+        }
+    }
+    func appendBody(_ suffix: String, for noteID: DockNote.ID) {
+        guard !suffix.isEmpty else { return }
+        mutate(noteID) { note in
+            let originalBody = note.body
+            note.body += suffix
+            note.bodyRTF = RichTextBody.appendingPlainText(
+                suffix,
+                to: originalBody,
+                rtfData: note.bodyRTF
+            )
+        }
+    }
     func setColor(_ colorHex: String) {
         guard let activeNoteID else { return }
         setColor(colorHex, for: activeNoteID)
@@ -372,25 +400,36 @@ final class NotesStore: ObservableObject {
     func setMaterial(_ material: NoteMaterial, for noteID: DockNote.ID) { mutate(noteID) { $0.material = material } }
     func setFontStyle(_ style: NoteFontStyle, for noteID: DockNote.ID) { mutate(noteID) { $0.fontStyle = style } }
     func setFontSize(_ size: Double, for noteID: DockNote.ID) { mutate(noteID) { $0.fontSize = min(max(size, 11), 28) } }
-    func setDueDate(_ date: Date?) { mutateActive { $0.dueDate = date } }
-    func setDueDate(_ date: Date?, for noteID: DockNote.ID) { mutate(noteID) { $0.dueDate = date } }
+    func setDueDate(_ date: Date?, language: AppLanguage = .system) {
+        guard let activeNoteID else { return }
+        setDueDate(date, for: activeNoteID, language: language)
+    }
+    func setDueDate(_ date: Date?, for noteID: DockNote.ID, language: AppLanguage = .system) {
+        mutate(noteID) { $0.dueDate = date }
+        if let note = note(id: noteID), note.dueDate != nil {
+            DueReminderScheduler.schedule(for: note, language: language)
+        } else {
+            DueReminderScheduler.cancel(for: noteID)
+        }
+    }
     func insertTask() {
         guard let activeNoteID else { return }
         insertTask(for: activeNoteID)
     }
     func insertTask(for noteID: DockNote.ID) {
-        mutate(noteID) { note in
-            let separator = note.body.isEmpty || note.body.hasSuffix("\n") ? "" : "\n"
-            note.body += separator + "☐ "
-        }
+        guard let note = note(id: noteID) else { return }
+        let separator = note.body.isEmpty || note.body.hasSuffix("\n") ? "" : "\n"
+        appendBody(separator + "☐ ", for: noteID)
     }
     func updateBodyWithDictation(base: String, transcript: String) {
-        let separator = base.isEmpty || base.hasSuffix("\n") ? "" : "\n"
-        mutateActive { $0.body = base + separator + transcript }
+        guard let activeNoteID else { return }
+        updateBodyWithDictation(base: base, transcript: transcript, for: activeNoteID)
     }
     func updateBodyWithDictation(base: String, transcript: String, for noteID: DockNote.ID) {
-        let separator = base.isEmpty || base.hasSuffix("\n") ? "" : "\n"
-        mutate(noteID) { $0.body = base + separator + transcript }
+        guard let current = note(id: noteID)?.body else { return }
+        let effectiveBase = current == base ? base : current
+        let separator = effectiveBase.isEmpty || effectiveBase.hasSuffix("\n") ? "" : "\n"
+        appendBody(separator + transcript, for: noteID)
     }
     func togglePinned() { mutateActive { $0.isPinned.toggle() } }
     func togglePinned(_ noteID: DockNote.ID) { mutate(noteID) { $0.isPinned.toggle() } }
@@ -424,6 +463,7 @@ final class NotesStore: ObservableObject {
             }
         }
         archivedNotes.insert(note, at: 0)
+        DueReminderScheduler.cancel(for: noteID)
         desktopNoteIDs.removeAll { $0 == noteID }
         if activeNoteID == noteID {
             activeNoteID = notes.first?.id
@@ -432,12 +472,13 @@ final class NotesStore: ObservableObject {
         persist()
     }
 
-    func restoreArchived(_ id: DockNote.ID) {
+    func restoreArchived(_ id: DockNote.ID, language: AppLanguage = .system) {
         guard let index = archivedNotes.firstIndex(where: { $0.id == id }) else { return }
         var note = archivedNotes.remove(at: index)
         note.isArchived = false
         note.modifiedAt = .now
         notes.append(note)
+        DueReminderScheduler.schedule(for: note, language: language)
         persist()
     }
 
@@ -464,6 +505,7 @@ final class NotesStore: ObservableObject {
     func delete(_ noteID: DockNote.ID) {
         guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
         notes.remove(at: index)
+        DueReminderScheduler.cancel(for: noteID)
         desktopNoteIDs.removeAll { $0 == noteID }
         if activeNoteID == noteID {
             activeNoteID = notes.first?.id

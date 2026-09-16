@@ -31,9 +31,17 @@ enum L10nKey: String {
     case moreNotes
     case customColor
     case dueDate
+    case reminderHint
+    case today
+    case overdue
+    case deadlineReached
     case clear
     case findInNote
     case matches
+    case searchLibrary
+    case titleMatch
+    case contentMatch
+    case noSearchResults
     case askAI
     case aiNotConfigured
     case invalidColor
@@ -54,6 +62,10 @@ enum L10nKey: String {
     case restore
     case noArchivedNotes
     case font
+    case bold
+    case underline
+    case strikethrough
+    case highlight
     case fontFamily
     case fontSize
     case fontSystem
@@ -121,7 +133,7 @@ enum L10n {
         .collapse: "收起便签",
         .pin: "固定",
         .archive: "归档",
-        .due: "日期",
+        .due: "截止时间",
         .savedNow: "已保存 · 刚刚",
         .task: "任务",
         .search: "搜索",
@@ -132,10 +144,18 @@ enum L10n {
         .close: "收起",
         .moreNotes: "更多便签",
         .customColor: "自定义颜色",
-        .dueDate: "到期日期",
+        .dueDate: "截止日期与时间",
+        .reminderHint: "设置后将在截止时间发送 macOS 本地提醒；首次使用需要允许通知。",
+        .today: "今天",
+        .overdue: "已逾期",
+        .deadlineReached: "截止时间已到",
         .clear: "清除",
         .findInNote: "在当前便签中查找",
         .matches: "找到 %d 处",
+        .searchLibrary: "搜索标题与便签内容",
+        .titleMatch: "标题",
+        .contentMatch: "正文",
+        .noSearchResults: "没有匹配的便签",
         .askAI: "询问 AI",
         .aiNotConfigured: "AI 服务尚未配置。便签和其他本地功能不受影响。",
         .invalidColor: "请输入 0–255 的 RGB，或 6 位 Hex 颜色。",
@@ -156,6 +176,10 @@ enum L10n {
         .restore: "恢复",
         .noArchivedNotes: "还没有归档的便签",
         .font: "字体",
+        .bold: "加粗",
+        .underline: "下划线",
+        .strikethrough: "删除线",
+        .highlight: "高亮",
         .fontFamily: "字体样式",
         .fontSize: "字号",
         .fontSystem: "系统",
@@ -222,7 +246,7 @@ enum L10n {
         .collapse: "Collapse note",
         .pin: "Pin",
         .archive: "Archive",
-        .due: "Due",
+        .due: "Deadline",
         .savedNow: "Saved · just now",
         .task: "Task",
         .search: "Find",
@@ -233,10 +257,18 @@ enum L10n {
         .close: "Close",
         .moreNotes: "More Notes",
         .customColor: "Custom Color",
-        .dueDate: "Due Date",
+        .dueDate: "Deadline Date & Time",
+        .reminderHint: "DockNotes sends a local macOS reminder at the deadline. Notification permission is requested the first time.",
+        .today: "Today",
+        .overdue: "Overdue",
+        .deadlineReached: "Deadline reached",
         .clear: "Clear",
         .findInNote: "Find in Note",
         .matches: "%d matches",
+        .searchLibrary: "Search titles and note content",
+        .titleMatch: "Title",
+        .contentMatch: "Content",
+        .noSearchResults: "No matching notes",
         .askAI: "Ask AI",
         .aiNotConfigured: "No AI provider is configured yet. Notes and other local features still work normally.",
         .invalidColor: "Enter RGB values from 0–255 or a 6-digit Hex color.",
@@ -257,6 +289,10 @@ enum L10n {
         .restore: "Restore",
         .noArchivedNotes: "No archived notes yet",
         .font: "Font",
+        .bold: "Bold",
+        .underline: "Underline",
+        .strikethrough: "Strikethrough",
+        .highlight: "Highlight",
         .fontFamily: "Typeface",
         .fontSize: "Size",
         .fontSystem: "System",

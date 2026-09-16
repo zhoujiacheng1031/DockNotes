@@ -5,6 +5,39 @@ import SwiftUI
 
 @MainActor
 enum SelfCheck {
+    static func renderAIPreview(to url: URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = folder.appendingPathComponent("notes.json")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let previewNote = DockNote(
+            title: "产品发布清单",
+            body: "整理发布说明、检查归档备份，并确认中英文界面。",
+            colorHex: "#F4DC84",
+            gradientEndHex: "#79BEDF"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try? encoder.encode([previewNote]).write(to: file)
+        let store = NotesStore(fileURL: file)
+        let defaults = UserDefaults(suiteName: "DockNotes.AIPreview.\(UUID().uuidString)")!
+        defaults.set("https://api.openai.com/v1", forKey: "docknotes.ai.endpoint")
+        defaults.set("gpt-5-mini", forKey: "docknotes.ai.model")
+        let settings = AppSettings(defaults: defaults)
+        let renderer = ImageRenderer(
+            content: NoteCard(
+                note: previewNote,
+                store: store,
+                settings: settings,
+                startsInAIMode: true
+            )
+            .frame(width: 460, height: 380)
+            .environment(\.colorScheme, .light)
+        )
+        renderer.proposedSize = ProposedViewSize(width: 460, height: 380)
+        renderer.scale = 2
+        write(renderer: renderer, to: url, failureMessage: "Could not render AI preview")
+    }
+
     static func renderDesktopPreview(to url: URL) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let file = folder.appendingPathComponent("notes.json")
@@ -13,7 +46,8 @@ enum SelfCheck {
             title: "记录 DockNotes 的修改",
             body: "桌面便签缩放预览",
             colorHex: "#E4F6AA",
-            gradientEndHex: "#FF81A6"
+            gradientEndHex: "#FF81A6",
+            dueDate: Date().addingTimeInterval(7_200)
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -28,61 +62,56 @@ enum SelfCheck {
         )
         renderer.proposedSize = ProposedViewSize(width: 700, height: 560)
         renderer.scale = 2
-        guard let image = renderer.nsImage,
-              let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:]) else {
-            fputs("Could not render desktop preview\n", stderr)
-            exit(EXIT_FAILURE)
-        }
-        do {
-            try png.write(to: url, options: .atomic)
-            print(url.path)
-            fflush(stdout)
-            exit(EXIT_SUCCESS)
-        } catch {
-            fputs("Could not save desktop preview: \(error)\n", stderr)
-            exit(EXIT_FAILURE)
-        }
+        write(renderer: renderer, to: url, failureMessage: "Could not render desktop preview")
     }
 
-    static func renderDeckPreview(to url: URL) {
+    static func renderTabHoverPreview(to url: URL) {
+        let previewNote = DockNote(
+            title: "这是一个标题较长、需要在悬浮时完整展示的项目便签",
+            body: "第一行摘要\n第二行包含更多上下文，方便不打开便签也能快速确认内容。",
+            colorHex: "#F4DC84",
+            gradientEndHex: "#79BEDF",
+            isPinned: true,
+            dueDate: Date().addingTimeInterval(3_600)
+        )
+        let renderer = ImageRenderer(
+            content: EdgeTabHoverCard(note: previewNote, language: .simplifiedChinese)
+                .environment(\.colorScheme, .light)
+        )
+        renderer.proposedSize = ProposedViewSize(width: 236, height: 180)
+        renderer.scale = 2
+        write(renderer: renderer, to: url, failureMessage: "Could not render tab hover preview")
+    }
+
+    static func renderDeckPreview(to url: URL, visibleTabCount: Int = DeckLayout.defaultVisibleTabs) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let file = folder.appendingPathComponent("notes.json")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let previewTitles = ["发布前清单", "灵感收集", "会议记录", "学习笔记", "项目资料", "生活灵感", "New note", "旅行计划", "阅读清单", "产品想法", "周末采购"]
         let previewNotes = previewTitles.enumerated().map { index, title in
             let gradient = NotePalette.gradients[index % NotePalette.gradients.count]
-            return DockNote(title: title, colorHex: gradient.startHex, gradientEndHex: gradient.endHex)
+            let dueDate: Date? = switch index {
+            case 0: Date().addingTimeInterval(3_600)
+            case 1: Date().addingTimeInterval(-3_600)
+            default: nil
+            }
+            return DockNote(title: title, colorHex: gradient.startHex, gradientEndHex: gradient.endHex, dueDate: dueDate)
         }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try? encoder.encode(previewNotes).write(to: file)
         let store = NotesStore(fileURL: file)
         let defaults = UserDefaults(suiteName: "DockNotes.DesignPreview.\(UUID().uuidString)")!
+        defaults.set(AppSettings.clampVisibleTabCount(visibleTabCount), forKey: "docknotes.deck.visibleTabCount")
         let settings = AppSettings(defaults: defaults)
+        let previewHeight: CGFloat = visibleTabCount >= 7 ? 900 : 800
         let renderer = ImageRenderer(
-            content: DeckWindowView(store: store, settings: settings, availableHeight: 800, isDesignPreview: true)
+            content: DeckWindowView(store: store, settings: settings, availableHeight: previewHeight, isDesignPreview: true)
                 .environment(\.colorScheme, .light)
         )
-        renderer.proposedSize = ProposedViewSize(width: DeckLayout.windowWidth, height: 800)
+        renderer.proposedSize = ProposedViewSize(width: DeckLayout.windowWidth, height: previewHeight)
         renderer.scale = 2
-        guard let image = renderer.nsImage,
-              let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:]) else {
-            fputs("Could not render deck preview\n", stderr)
-            exit(EXIT_FAILURE)
-        }
-        do {
-            try png.write(to: url, options: .atomic)
-            print(url.path)
-            fflush(stdout)
-            exit(EXIT_SUCCESS)
-        } catch {
-            fputs("Could not save deck preview: \(error)\n", stderr)
-            exit(EXIT_FAILURE)
-        }
+        write(renderer: renderer, to: url, failureMessage: "Could not render deck preview")
     }
 
     static func run() {
@@ -92,18 +121,71 @@ enum SelfCheck {
         check(AppSettings.clampVisibleTabCount(0) == 1, "visible tab count has a lower bound")
         check(AppSettings.clampVisibleTabCount(8) == 7, "visible tab count has a seven-tab upper bound")
 
+        var deadlineCalendar = Calendar(identifier: .gregorian)
+        deadlineCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let deadlineNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let todayDeadline = DeadlinePresentation.make(
+            for: deadlineNow.addingTimeInterval(3_600),
+            now: deadlineNow,
+            calendar: deadlineCalendar,
+            language: .english
+        )
+        let overdueDeadline = DeadlinePresentation.make(
+            for: deadlineNow.addingTimeInterval(-3_600),
+            now: deadlineNow,
+            calendar: deadlineCalendar,
+            language: .simplifiedChinese
+        )
+        check(todayDeadline.status == .today && todayDeadline.toolbarLabel.hasPrefix("Today"), "same-day deadlines show time in the note header")
+        check(overdueDeadline.status == .overdue && overdueDeadline.edgeLabel.hasPrefix("!"), "overdue deadlines are visibly marked on edge tabs")
+        let reminderID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
+        check(
+            DueReminderScheduler.identifier(for: reminderID) == "docknotes.deadline.00000000-0000-0000-0000-000000000123",
+            "deadline reminders use a stable per-note notification identifier"
+        )
+
+        let searchRanges = NoteSearchEngine.matchRanges(in: "Beta beta", query: "beta")
+        check(searchRanges == [NSRange(location: 0, length: 4), NSRange(location: 5, length: 4)], "note search exposes every case-insensitive match for emphasis")
+        let highlightStorage = NSTextStorage(string: "Beta beta")
+        let highlightLayout = NSLayoutManager()
+        highlightStorage.addLayoutManager(highlightLayout)
+        _ = NoteSearchHighlighter.apply(to: highlightLayout, text: highlightStorage.string, query: "beta")
+        check(
+            highlightLayout.temporaryAttribute(.backgroundColor, atCharacterIndex: 0, effectiveRange: nil) != nil,
+            "note search applies visible emphasis through temporary editor attributes"
+        )
+        let titleMatch = DockNote(title: "Alpha plan", body: "plain body")
+        let laterTitleMatch = DockNote(title: "Zulu alpha", body: "plain body")
+        let bodyMatch = DockNote(title: "Beta note", body: "mentions alpha here")
+        let noMatch = DockNote(title: "Gamma note", body: "plain body")
+        check(
+            NoteSearchEngine.rankedNotes([bodyMatch, laterTitleMatch, noMatch, titleMatch], query: "alpha").map(\.id)
+                == [titleMatch.id, laterTitleMatch.id, bodyMatch.id],
+            "library search ranks title matches first, orders by title, and excludes unrelated notes"
+        )
+        check(NotePresentationPolicy.searchIsOverlay, "in-note search floats above text instead of resizing it")
+        check(NotePresentationPolicy.aiKeepsEditorVisible, "opening in-note AI keeps the note body visible")
+
+        let libraryFile = FileManager.default.temporaryDirectory.appendingPathComponent("DockNotes-Library-\(UUID().uuidString).json")
+        let libraryStore = NotesStore(fileURL: libraryFile)
+        libraryStore.isPreferencesPresented = true
+        libraryStore.presentLibrary()
+        check(libraryStore.isLibraryPresented, "the in-app library entry presents the library")
+        check(!libraryStore.isPreferencesPresented, "opening the library dismisses settings")
+        try? FileManager.default.removeItem(at: libraryFile)
+
         let layoutNotes = (0..<6).map { DockNote(title: "Note \($0)") }
         let collapsedPlan = DeckLayout.plan(
             notes: layoutNotes,
             activeNoteID: layoutNotes[1].id,
             isExpanded: false,
-            availableHeight: 558
+            availableHeight: 640
         )
         let expandedPlan = DeckLayout.plan(
             notes: layoutNotes,
             activeNoteID: layoutNotes[1].id,
             isExpanded: true,
-            availableHeight: 558
+            availableHeight: 640
         )
         check(collapsedPlan.slots[0] == layoutNotes[0].id, "deck first slot is stable")
         check(expandedPlan.slots[0] == layoutNotes[0].id, "opening a note does not move the first slot")
@@ -155,13 +237,80 @@ enum SelfCheck {
             "drop residual preserves the dragged tab's visual position across live reordering"
         )
         check(defaultSlotPlan.overflowIDs == tenNotes.dropFirst(4).map(\.id), "only notes after the configured slots enter More Notes")
-        check(DeckLayout.tabWidth == 32, "edge tab width is half of the former 64-point tab")
+        check(DeckLayout.tabWidth == 48, "stacked edge tabs use a slender 48-point paper strip")
+        check(DeckLayout.tabVisualHeight > DeckLayout.tabHeight, "paper tabs overlap while preserving the drag pitch")
+        let defaultTabPitch = DeckLayout.tabPitch(for: 800, slotCount: 4)
+        check(defaultTabPitch > DeckLayout.tabHeight, "four default tabs retain the airy spacing shown in the reference")
+        let denseTabPitch = DeckLayout.tabPitch(for: 800, slotCount: 7)
+        check(
+            EdgeTabLayout.contentTopInset + EdgeTabLayout.titleContentLength <= denseTabPitch,
+            "the fixed edge-tab title slot stays inside the minimum visible pitch"
+        )
+        check(
+            DeckLayout.capacity(for: 800, preferredVisibleCount: 7) == 6
+                && DeckLayout.capacity(for: 900, preferredVisibleCount: 7) == 7,
+            "the deck shows up to seven tabs while adapting to shorter screens"
+        )
+        check(
+            EdgeTabLayout.contentTopInset >= 22,
+            "edge-tab titles keep approximately two CJK glyphs of breathing room above them"
+        )
+        check(
+            EdgeTabLayout.deadlineTopInset < EdgeTabLayout.contentTopInset,
+            "the horizontal deadline occupies the reserved area above the vertical title"
+        )
+        let longHoverTitle = "这是一个用于验证固定排版与悬浮信息的很长标题"
+        let hoverInfo = EdgeTabHoverInfo.make(
+            note: DockNote(title: longHoverTitle, body: "第一行\n  第二行", isPinned: true),
+            language: .simplifiedChinese
+        )
+        check(hoverInfo.title == longHoverTitle, "hover information preserves the complete long title")
+        check(hoverInfo.preview == "第一行 第二行", "hover information presents a compact content preview")
+        check(hoverInfo.isPinned, "hover information preserves pinned state")
+        check(
+            DeckLayout.tabStackHeight(slotCount: 4, pitch: defaultTabPitch)
+                == DeckLayout.tabVisualHeight + defaultTabPitch * 3,
+            "the stacked deck reserves its visible overhang before the round controls"
+        )
+        check(DeckLayout.tiltDegrees(for: 0) != DeckLayout.tiltDegrees(for: 1), "adjacent paper tabs use alternating tilt angles")
         check(!PanelCoordinator.localClickIsOutsideApp(hasWindow: true), "a More Notes popover click remains an in-app click")
         check(PanelCoordinator.localClickIsOutsideApp(hasWindow: false), "a local event without a DockNotes window is outside")
         check(PanelCoordinator.deckWindowLevel.rawValue > PanelCoordinator.noteWindowLevel.rawValue, "the edge deck and its More Notes popover stay above an open note")
         check(ColorInput.hex(red: "12", green: "34", blue: "56") == "#0C2238", "RGB converts to hex")
         check(ColorInput.hex(red: "256", green: "0", blue: "0") == nil, "RGB rejects out-of-range values")
         check(ColorInput.normalizedHex(" 7ead94 ") == "#7EAD94", "hex input is normalized")
+        check(Set(NoteHighlightPalette.colors).count == 6, "text highlighting offers six distinct preset colors")
+        check(
+            NoteHighlightPalette.hex(from: Color(hex: "#93C5FD")) == "#93C5FD",
+            "the custom highlight picker preserves the selected RGB color"
+        )
+        let coloredSelection = NSMutableAttributedString(string: "彩色高亮")
+        let coloredRange = NSRange(location: 0, length: 2)
+        NoteHighlightFormatter.apply(hex: "#93C5FD", to: coloredSelection, range: coloredRange)
+        check(
+            coloredSelection.attribute(.backgroundColor, at: 1, effectiveRange: nil) is NSColor,
+            "the chosen highlight color is applied to the selected text"
+        )
+        let coloredRTF = try? coloredSelection.data(
+            from: NSRange(location: 0, length: coloredSelection.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        let restoredColoredSelection = coloredRTF.flatMap {
+            try? NSAttributedString(
+                data: $0,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+            )
+        }
+        check(
+            restoredColoredSelection?.attribute(.backgroundColor, at: 1, effectiveRange: nil) is NSColor,
+            "the selected highlight color survives rich-text persistence"
+        )
+        NoteHighlightFormatter.apply(hex: nil, to: coloredSelection, range: coloredRange)
+        check(
+            coloredSelection.attribute(.backgroundColor, at: 1, effectiveRange: nil) == nil,
+            "selected-text highlighting can be cleared explicitly"
+        )
         check(
             AIClient.endpointURL(from: "https://example.com/v1", provider: .openAICompatible)?.absoluteString
                 == "https://example.com/v1/chat/completions",
@@ -221,7 +370,48 @@ enum SelfCheck {
         let original = note
         _ = L10n.text(.preferences, language: .simplifiedChinese)
         _ = L10n.text(.preferences, language: .english)
+        check(
+            L10n.text(.deadlineReached, language: .simplifiedChinese) == "截止时间已到"
+                && L10n.text(.deadlineReached, language: .english) == "Deadline reached",
+            "deadline notifications follow the selected interface language"
+        )
         check(note == original, "language switching mutated note content")
+
+        let styledBody = NSMutableAttributedString(string: "Persistent formatting")
+        styledBody.addAttribute(
+            .underlineStyle,
+            value: NSUnderlineStyle.single.rawValue,
+            range: NSRange(location: 0, length: styledBody.length)
+        )
+        let styledRTF = try? styledBody.data(
+            from: NSRange(location: 0, length: styledBody.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        let appendedStyledRTF = RichTextBody.appendingPlainText("\nAI result", to: styledBody.string, rtfData: styledRTF)
+        let appendedStyledBody = appendedStyledRTF.flatMap {
+            try? NSAttributedString(
+                data: $0,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+            )
+        }
+        check(
+            appendedStyledBody?.string == "Persistent formatting\nAI result"
+                && (appendedStyledBody?.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? NSNumber)?.intValue != 0
+                && appendedStyledBody?.attribute(
+                    .underlineStyle,
+                    at: ("Persistent formatting\n" as NSString).length,
+                    effectiveRange: nil
+                ) == nil,
+            "programmatic appends preserve existing rich text without leaking its style"
+        )
+        let styledNote = DockNote(title: "Rich text", body: styledBody.string, bodyRTF: styledRTF)
+        let styledEncoded = try? JSONEncoder().encode(styledNote)
+        let styledDecoded = styledEncoded.flatMap { try? JSONDecoder().decode(DockNote.self, from: $0) }
+        check(
+            styledDecoded?.body == styledBody.string && styledDecoded?.bodyRTF == styledRTF,
+            "rich-text formatting persists alongside searchable plain text"
+        )
 
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -479,6 +669,29 @@ enum SelfCheck {
         guard condition() else {
             let data = Data("Self-check failed: \(message)\n".utf8)
             try? FileHandle.standardError.write(contentsOf: data)
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func write<Content: View>(
+        renderer: ImageRenderer<Content>,
+        to url: URL,
+        failureMessage: String
+    ) {
+        guard let image = renderer.nsImage,
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            fputs("\(failureMessage)\n", stderr)
+            exit(EXIT_FAILURE)
+        }
+        do {
+            try png.write(to: url, options: .atomic)
+            print(url.path)
+            fflush(stdout)
+            exit(EXIT_SUCCESS)
+        } catch {
+            fputs("\(failureMessage): \(error)\n", stderr)
             exit(EXIT_FAILURE)
         }
     }
