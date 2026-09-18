@@ -17,6 +17,10 @@ enum DeckLayout {
     static let defaultVisibleTabs = 4
     static let windowWidth: CGFloat = 60
     static let tabWidth: CGFloat = 48
+    /// Keep the resting wake target flush with the screen edge. The visible
+    /// indicator is wider, but hovering it before reaching the edge should not
+    /// fan the deck open.
+    static let restingActivationWidth: CGFloat = 2
 
     static var tabOverlap: CGFloat { tabVisualHeight - preferredTabPitch }
 

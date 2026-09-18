@@ -1,5 +1,6 @@
 import Darwin
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 
@@ -121,6 +122,20 @@ enum SelfCheck {
         check(AppSettings.clampVisibleTabCount(0) == 1, "visible tab count has a lower bound")
         check(AppSettings.clampVisibleTabCount(8) == 7, "visible tab count has a seven-tab upper bound")
 
+        let aiPersistenceDefaults = UserDefaults(suiteName: "DockNotes.AIPersistence.\(UUID().uuidString)")!
+        let configuredAISettings = AppSettings(defaults: aiPersistenceDefaults)
+        configuredAISettings.aiProvider = .anthropic
+        configuredAISettings.aiEndpoint = "https://example.com/v1"
+        configuredAISettings.aiModel = "claude-sonnet-5"
+        aiPersistenceDefaults.synchronize()
+        let reloadedAISettings = AppSettings(defaults: aiPersistenceDefaults)
+        check(
+            reloadedAISettings.aiProvider == .anthropic
+                && reloadedAISettings.aiEndpoint == "https://example.com/v1"
+                && reloadedAISettings.aiModel == "claude-sonnet-5",
+            "AI provider, endpoint, and model survive a full settings reload"
+        )
+
         var deadlineCalendar = Calendar(identifier: .gregorian)
         deadlineCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let deadlineNow = Date(timeIntervalSince1970: 1_800_000_000)
@@ -172,7 +187,33 @@ enum SelfCheck {
         libraryStore.presentLibrary()
         check(libraryStore.isLibraryPresented, "the in-app library entry presents the library")
         check(!libraryStore.isPreferencesPresented, "opening the library dismisses settings")
+        let libraryArchivedDeleteID = libraryStore.notes[0].id
+        libraryStore.archive(libraryArchivedDeleteID)
+        check(
+            libraryStore.archivedNotes.contains(where: { $0.id == libraryArchivedDeleteID }),
+            "the library can archive an active note"
+        )
+        libraryStore.delete(libraryArchivedDeleteID)
+        check(
+            !libraryStore.archivedNotes.contains(where: { $0.id == libraryArchivedDeleteID }),
+            "the library can permanently delete an archived note"
+        )
         try? FileManager.default.removeItem(at: libraryFile)
+
+        let emptyLibraryFile = FileManager.default.temporaryDirectory.appendingPathComponent("DockNotes-Empty-Library-\(UUID().uuidString).json")
+        let emptyLibraryStore = NotesStore(fileURL: emptyLibraryFile)
+        for noteID in emptyLibraryStore.notes.map(\.id) {
+            emptyLibraryStore.delete(noteID)
+        }
+        for noteID in emptyLibraryStore.archivedNotes.map(\.id) {
+            emptyLibraryStore.delete(noteID)
+        }
+        let reloadedEmptyLibrary = NotesStore(fileURL: emptyLibraryFile)
+        check(
+            reloadedEmptyLibrary.notes.isEmpty && reloadedEmptyLibrary.archivedNotes.isEmpty,
+            "deleting every note remains empty after a full store reload"
+        )
+        try? FileManager.default.removeItem(at: emptyLibraryFile)
 
         let layoutNotes = (0..<6).map { DockNote(title: "Note \($0)") }
         let collapsedPlan = DeckLayout.plan(
@@ -236,8 +277,349 @@ enum SelfCheck {
             abs((releaseTranslation - DeckLayout.tabHeight * 2) - releaseResidual) < 0.001,
             "drop residual preserves the dragged tab's visual position across live reordering"
         )
+        let repeatedDragID = UUID()
+        let repeatedDrag = TabDragCoordinator()
+        repeatedDrag.begin(noteID: repeatedDragID, sourceSlot: 0)
+        repeatedDrag.beginSettling(
+            destinationSlot: 2,
+            translation: DeckLayout.tabHeight * 1.7,
+            pitch: DeckLayout.tabHeight,
+            noteID: repeatedDragID
+        )
+        repeatedDrag.begin(noteID: repeatedDragID, sourceSlot: 2)
+        check(
+            !repeatedDrag.isSettling && repeatedDrag.sourceSlot == 2,
+            "a new drag recovers immediately when the previous same-tab settling session was interrupted"
+        )
+        let smoothDrag = TabDragCoordinator()
+        let smoothDragID = UUID()
+        smoothDrag.begin(noteID: smoothDragID, sourceSlot: 0)
+        var targetUpdateCount = 0
+        let targetUpdateObservation = smoothDrag.$targetSlot
+            .dropFirst()
+            .sink { _ in targetUpdateCount += 1 }
+        for _ in 0..<120 {
+            smoothDrag.update(
+                translation: DeckLayout.tabHeight,
+                targetSlot: 1,
+                noteID: smoothDragID
+            )
+        }
+        check(
+            targetUpdateCount == 1,
+            "dragging within one slot publishes one layout update instead of one update per mouse event"
+        )
+        withExtendedLifetime(targetUpdateObservation) {}
+        let staleReleaseDrag = TabDragCoordinator()
+        let staleReleaseDragID = UUID()
+        staleReleaseDrag.begin(noteID: staleReleaseDragID, sourceSlot: 0)
+        let staleReleaseGeneration = staleReleaseDrag.recoveryGeneration(
+            noteID: staleReleaseDragID
+        )!
+        staleReleaseDrag.beginSettling(
+            destinationSlot: 1,
+            translation: DeckLayout.tabHeight,
+            pitch: DeckLayout.tabHeight,
+            noteID: staleReleaseDragID
+        )
+        staleReleaseDrag.completeSettling(noteID: staleReleaseDragID)
+        staleReleaseDrag.begin(noteID: staleReleaseDragID, sourceSlot: 1)
+        staleReleaseDrag.update(
+            translation: DeckLayout.tabHeight * 0.5,
+            targetSlot: 2,
+            noteID: staleReleaseDragID
+        )
+        staleReleaseDrag.recoverInterruptedDrag(
+            noteID: staleReleaseDragID,
+            sessionGeneration: staleReleaseGeneration
+        )
+        check(
+            staleReleaseDrag.noteID == staleReleaseDragID,
+            "a delayed release from the previous drag cannot cancel a newer drag of the same label"
+        )
+        staleReleaseDrag.finish(noteID: staleReleaseDragID)
+        let repeatedReleaseStress = TabDragCoordinator()
+        let repeatedReleaseStressID = UUID()
+        for iteration in 0..<100 {
+            let sourceSlot = iteration % 3
+            repeatedReleaseStress.begin(noteID: repeatedReleaseStressID, sourceSlot: sourceSlot)
+            let staleGeneration = repeatedReleaseStress.recoveryGeneration(
+                noteID: repeatedReleaseStressID
+            )!
+            repeatedReleaseStress.beginSettling(
+                destinationSlot: (sourceSlot + 1) % 3,
+                translation: DeckLayout.tabHeight,
+                pitch: DeckLayout.tabHeight,
+                noteID: repeatedReleaseStressID
+            )
+            repeatedReleaseStress.completeSettling(noteID: repeatedReleaseStressID)
+            repeatedReleaseStress.begin(
+                noteID: repeatedReleaseStressID,
+                sourceSlot: (sourceSlot + 1) % 3
+            )
+            repeatedReleaseStress.update(
+                translation: DeckLayout.tabHeight * 0.5,
+                targetSlot: (sourceSlot + 2) % 3,
+                noteID: repeatedReleaseStressID
+            )
+            repeatedReleaseStress.recoverInterruptedDrag(
+                noteID: repeatedReleaseStressID,
+                sessionGeneration: staleGeneration
+            )
+            check(
+                repeatedReleaseStress.noteID == repeatedReleaseStressID,
+                "one hundred repeated drags remain immune to stale release callbacks"
+            )
+            repeatedReleaseStress.finish(noteID: repeatedReleaseStressID)
+        }
+        let interruptedDrag = TabDragCoordinator()
+        let interruptedDragID = UUID()
+        interruptedDrag.begin(noteID: interruptedDragID, sourceSlot: 0)
+        interruptedDrag.update(
+            translation: DeckLayout.tabHeight * 0.5,
+            targetSlot: 1,
+            noteID: interruptedDragID
+        )
+        interruptedDrag.recoverInterruptedDrag(noteID: interruptedDragID)
+        check(
+            interruptedDrag.noteID == nil,
+            "a missed panel mouse-up cannot leave the drag session stuck"
+        )
+        let selfCleaningDrag = TabDragCoordinator()
+        let selfCleaningDragID = UUID()
+        selfCleaningDrag.begin(noteID: selfCleaningDragID, sourceSlot: 0)
+        selfCleaningDrag.beginSettling(
+            destinationSlot: 1,
+            translation: DeckLayout.tabHeight,
+            pitch: DeckLayout.tabHeight,
+            noteID: selfCleaningDragID
+        )
+        selfCleaningDrag.completeSettling(noteID: selfCleaningDragID)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.30))
+        check(
+            selfCleaningDrag.noteID == nil,
+            "the drag coordinator owns and completes its settling cleanup"
+        )
+        var labelPointer = TabPointerDragSession()
+        labelPointer.mouseDown(screenY: 700)
+        check(
+            labelPointer.mouseDragged(screenY: 699) == .dragChanged(1),
+            "the colored label starts following the pointer after the first pixel of movement"
+        )
+        check(
+            labelPointer.mouseDragged(screenY: 694) == .dragChanged(6),
+            "dragging the colored label body produces a downward screen-space translation"
+        )
+        check(
+            labelPointer.mouseDragged(screenY: 560) == .dragChanged(140),
+            "the label drag remains continuous after crossing multiple slots"
+        )
+        check(
+            labelPointer.mouseUp(screenY: 540) == .dragEnded(160),
+            "releasing the colored label body completes the reorder drag"
+        )
+        var labelClick = TabPointerDragSession()
+        labelClick.mouseDown(screenY: 700)
+        check(
+            labelClick.mouseUp(screenY: 700) == .clicked,
+            "a stationary colored-label click still opens its note"
+        )
+        let nativeLabelSurface = TabPointerTrackingView(
+            frame: NSRect(x: 0, y: 0, width: DeckLayout.tabWidth, height: DeckLayout.tabVisualHeight)
+        )
+        var nativeLabelEvents: [TabPointerEvent] = []
+        nativeLabelSurface.onDragChanged = { nativeLabelEvents.append(.dragChanged($0)) }
+        nativeLabelSurface.onDragEnded = { nativeLabelEvents.append(.dragEnded($0)) }
+        nativeLabelSurface.onClick = { nativeLabelEvents.append(.clicked) }
+        func pointerEvent(_ type: NSEvent.EventType, y: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type,
+                location: NSPoint(x: DeckLayout.tabWidth / 2, y: y),
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )!
+        }
+        nativeLabelSurface.mouseDown(with: pointerEvent(.leftMouseDown, y: 700))
+        check(nativeLabelEvents.isEmpty, "pressing the colored label preserves native drag capture")
+        nativeLabelSurface.mouseDragged(with: pointerEvent(.leftMouseDragged, y: 694))
+        nativeLabelSurface.mouseDragged(with: pointerEvent(.leftMouseDragged, y: 560))
+        nativeLabelSurface.mouseUp(with: pointerEvent(.leftMouseUp, y: 540))
+        check(
+            nativeLabelEvents == [.dragChanged(6), .dragChanged(140), .dragEnded(160)],
+            "the native colored-label surface delivers a complete drag and drop event sequence"
+        )
+        var trackingHeld = false
+        nativeLabelSurface.onTrackingChanged = { tracking, _ in trackingHeld = tracking }
+        nativeLabelSurface.mouseDown(with: pointerEvent(.leftMouseDown, y: 700))
+        NotificationCenter.default.post(name: .dockNotesPointerReleased, object: nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        check(!trackingHeld, "a missed native mouse-up releases the automatic-collapse hold")
+        nativeLabelSurface.mouseDown(with: pointerEvent(.leftMouseDown, y: 700))
+        NotificationCenter.default.post(name: .dockNotesPointerReleased, object: nil)
+        nativeLabelSurface.mouseUp(with: pointerEvent(.leftMouseUp, y: 700))
+        nativeLabelSurface.mouseDown(with: pointerEvent(.leftMouseDown, y: 700))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        check(trackingHeld, "an old native release cannot unlock the next pointer session")
+        nativeLabelSurface.mouseUp(with: pointerEvent(.leftMouseUp, y: 700))
+        let dragProbeFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DockNotes-drag-probe-\(UUID().uuidString)", isDirectory: true)
+        let dragProbeFile = dragProbeFolder.appendingPathComponent("notes.json")
+        try? FileManager.default.createDirectory(at: dragProbeFolder, withIntermediateDirectories: true)
+        let dragProbeNote = DockNote(title: "Drag probe")
+        let dragProbeEncoder = JSONEncoder()
+        dragProbeEncoder.dateEncodingStrategy = .iso8601
+        try? dragProbeEncoder.encode([dragProbeNote, DockNote(title: "Second drag probe")]).write(to: dragProbeFile)
+        let dragProbeStore = NotesStore(fileURL: dragProbeFile)
+        let dragProbeDefaults = UserDefaults(suiteName: "DockNotes.DragProbe.\(UUID().uuidString)")!
+        let dragProbeSettings = AppSettings(defaults: dragProbeDefaults)
+        let dragProbeHost = NSHostingView(
+            rootView: DeckWindowView(
+                store: dragProbeStore,
+                settings: dragProbeSettings,
+                availableHeight: 520
+            )
+            .frame(width: DeckLayout.windowWidth, height: 520)
+        )
+        dragProbeHost.frame = NSRect(x: 0, y: 0, width: DeckLayout.windowWidth, height: 520)
+        let dragProbePanel = NSPanel(
+            contentRect: dragProbeHost.bounds,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        dragProbePanel.contentView = dragProbeHost
+        dragProbePanel.alphaValue = 0
+        dragProbePanel.orderBack(nil)
+        dragProbeHost.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        dragProbeHost.layoutSubtreeIfNeeded()
+        let mountedLabelSurfaces = descendants(of: dragProbeHost, as: TabPointerTrackingView.self)
+        check(!mountedLabelSurfaces.isEmpty, "the deck mounts a native drag surface on its colored labels")
+        let mountedLabelSurface = mountedLabelSurfaces[0]
+        let windowsBeforeHover = Set(NSApp.windows.map(ObjectIdentifier.init))
+        mountedLabelSurface.mouseEntered(with: NSEvent.enterExitEvent(
+            with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: dragProbePanel.windowNumber, context: nil,
+            eventNumber: 0, trackingNumber: 0, userData: nil
+        )!)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.60))
+        let hoverWindows = NSApp.windows.filter {
+            !windowsBeforeHover.contains(ObjectIdentifier($0)) && $0.isVisible
+        }
+        check(!hoverWindows.isEmpty, "the mounted label displays its hover preview")
+        check(
+            hoverWindows.allSatisfy { $0.ignoresMouseEvents && !$0.canBecomeKey },
+            "label hover previews must not intercept the next drag or take keyboard focus"
+        )
+        let mountedStartY = mountedLabelSurface.convert(mountedLabelSurface.bounds, to: dragProbeHost).midY
+        let mountedCenter = mountedLabelSurface.convert(
+            NSPoint(x: mountedLabelSurface.bounds.midX, y: mountedLabelSurface.bounds.midY),
+            to: nil
+        )
+        func mountedPointerEvent(_ type: NSEvent.EventType, location: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type,
+                location: location,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: dragProbePanel.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )!
+        }
+        dragProbePanel.sendEvent(mountedPointerEvent(.leftMouseDown, location: mountedCenter))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        dragProbePanel.sendEvent(
+            mountedPointerEvent(
+                .leftMouseDragged,
+                location: NSPoint(x: mountedCenter.x, y: mountedCenter.y - 50)
+            )
+        )
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        dragProbeHost.layoutSubtreeIfNeeded()
+        let mountedDraggedY = mountedLabelSurface.convert(mountedLabelSurface.bounds, to: dragProbeHost).midY
+        check(
+            mountedLabelSurface.superview != nil && abs(mountedDraggedY - mountedStartY) >= 40,
+            "the mounted colored label remains attached and follows the pointer throughout the drag"
+        )
+        dragProbeStore.pointerExitedDeck(keepOpen: false)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.75))
+        check(
+            dragProbeStore.deckState.showsTabs && mountedLabelSurface.window === dragProbePanel,
+            "holding a label outside the deck must not collapse and destroy its drag surface"
+        )
+        dragProbePanel.sendEvent(
+            mountedPointerEvent(
+                .leftMouseUp,
+                location: NSPoint(x: mountedCenter.x, y: mountedCenter.y - 50)
+            )
+        )
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.75))
+        check(
+            dragProbeStore.deckState.showsTabs,
+            "a release inside the deck corrects a stale exit and keeps the next label draggable"
+        )
+        for iteration in 0..<30 {
+            dragProbeStore.pointerEnteredDeck()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.27))
+            dragProbeHost.layoutSubtreeIfNeeded()
+            let surfaces = descendants(of: dragProbeHost, as: TabPointerTrackingView.self)
+                .sorted {
+                    $0.convert($0.bounds, to: dragProbeHost).minY
+                        < $1.convert($1.bounds, to: dragProbeHost).minY
+                }
+            check(surfaces.count == 2, "repeated drag retains both mounted labels")
+            let surface = surfaces[0]
+            surface.mouseEntered(with: NSEvent.enterExitEvent(
+                with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: dragProbePanel.windowNumber, context: nil,
+                eventNumber: 0, trackingNumber: 0, userData: nil
+            )!)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.45))
+            check(
+                dragProbePanel.childWindows?.contains { $0.isVisible && $0.ignoresMouseEvents } == true,
+                "hover preview remains available before repeated drag \(iteration)"
+            )
+            let rect = surface.convert(surface.bounds, to: dragProbeHost)
+            let start = dragProbeHost.convert(NSPoint(x: rect.midX, y: rect.minY + 25), to: nil)
+            let pitch = DeckLayout.tabPitch(for: 520, slotCount: 2)
+            let end = NSPoint(x: start.x, y: start.y - pitch)
+            let previousOrder = dragProbeStore.notes.map(\.id)
+            dragProbePanel.sendEvent(mountedPointerEvent(.leftMouseDown, location: start))
+            check(
+                dragProbePanel.childWindows?.isEmpty != false,
+                "pressing a label dismisses its preview without retaining an input window"
+            )
+            dragProbePanel.sendEvent(mountedPointerEvent(.leftMouseDragged, location: end))
+            if iteration % 10 == 0 {
+                dragProbeStore.pointerExitedDeck(keepOpen: false)
+                RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.70))
+                check(dragProbeStore.deckState.showsTabs, "repeated drag survives an extended pointer exit")
+            }
+            dragProbePanel.sendEvent(mountedPointerEvent(.leftMouseUp, location: end))
+            check(
+                dragProbeStore.notes.map(\.id) == Array(previousOrder.reversed()),
+                "mounted panel reorder succeeds at iteration \(iteration)"
+            )
+        }
+        dragProbePanel.orderOut(nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.30))
+        dragProbeStore.pointerExitedDeck(keepOpen: false)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.75))
+        check(dragProbeStore.deckState == .resting, "releasing the label restores automatic collapse")
         check(defaultSlotPlan.overflowIDs == tenNotes.dropFirst(4).map(\.id), "only notes after the configured slots enter More Notes")
         check(DeckLayout.tabWidth == 48, "stacked edge tabs use a slender 48-point paper strip")
+        check(
+            DeckLayout.restingActivationWidth <= 2,
+            "a resting deck activates only when the pointer reaches the screen edge"
+        )
         check(DeckLayout.tabVisualHeight > DeckLayout.tabHeight, "paper tabs overlap while preserving the drag pitch")
         let defaultTabPitch = DeckLayout.tabPitch(for: 800, slotCount: 4)
         check(defaultTabPitch > DeckLayout.tabHeight, "four default tabs retain the airy spacing shown in the reference")
@@ -259,6 +641,31 @@ enum SelfCheck {
             EdgeTabLayout.deadlineTopInset < EdgeTabLayout.contentTopInset,
             "the horizontal deadline occupies the reserved area above the vertical title"
         )
+        var reminderCalendar = Calendar(identifier: .gregorian)
+        reminderCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let reminderDay = reminderCalendar.date(
+            from: DateComponents(year: 2027, month: 2, day: 3, hour: 8, minute: 5)
+        )!
+        let parsed24Hour = ReminderTimeInput.parse("21:30", on: reminderDay, calendar: reminderCalendar)
+        let parsed12Hour = ReminderTimeInput.parse("9:30 PM", on: reminderDay, calendar: reminderCalendar)
+        check(
+            parsed24Hour.map {
+                reminderCalendar.component(.hour, from: $0) == 21
+                    && reminderCalendar.component(.minute, from: $0) == 30
+            } == true,
+            "manual reminder input accepts 24-hour time"
+        )
+        check(
+            parsed12Hour.map {
+                reminderCalendar.component(.hour, from: $0) == 21
+                    && reminderCalendar.component(.minute, from: $0) == 30
+            } == true,
+            "manual reminder input accepts 12-hour time"
+        )
+        check(
+            ReminderTimeInput.parse("25:00", on: reminderDay, calendar: reminderCalendar) == nil,
+            "manual reminder input rejects invalid time"
+        )
         let longHoverTitle = "这是一个用于验证固定排版与悬浮信息的很长标题"
         let hoverInfo = EdgeTabHoverInfo.make(
             note: DockNote(title: longHoverTitle, body: "第一行\n  第二行", isPinned: true),
@@ -275,6 +682,14 @@ enum SelfCheck {
         check(DeckLayout.tiltDegrees(for: 0) != DeckLayout.tiltDegrees(for: 1), "adjacent paper tabs use alternating tilt angles")
         check(!PanelCoordinator.localClickIsOutsideApp(hasWindow: true), "a More Notes popover click remains an in-app click")
         check(PanelCoordinator.localClickIsOutsideApp(hasWindow: false), "a local event without a DockNotes window is outside")
+        check(
+            !PanelCoordinator.localClickIsOutsideApp(
+                hasWindow: false,
+                point: NSPoint(x: 59, y: 400),
+                appWindowFrames: [NSRect(x: 0, y: 0, width: 60, height: 800)]
+            ),
+            "a windowless mouse event over the edge-label panel remains an in-app click"
+        )
         check(PanelCoordinator.deckWindowLevel.rawValue > PanelCoordinator.noteWindowLevel.rawValue, "the edge deck and its More Notes popover stay above an open note")
         check(ColorInput.hex(red: "12", green: "34", blue: "56") == "#0C2238", "RGB converts to hex")
         check(ColorInput.hex(red: "256", green: "0", blue: "0") == nil, "RGB rejects out-of-range values")
@@ -449,6 +864,53 @@ enum SelfCheck {
         )
         let windowDefaults = UserDefaults(suiteName: "DockNotes.WindowSelfCheck.\(UUID().uuidString)")!
         let windowSettings = AppSettings(defaults: windowDefaults)
+        let edgeSwitchStore = NotesStore(fileURL: folder.appendingPathComponent("edge-switch.json"))
+        edgeSwitchStore.dismissDeck()
+        let edgeSwitchCoordinator = PanelCoordinator(
+            store: edgeSwitchStore,
+            settings: windowSettings,
+            visibleFrameOverride: NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        edgeSwitchCoordinator.start()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        let rightEdgeFrame = edgeSwitchCoordinator.edgePanelFrameForTesting
+        windowSettings.deckEdge = .left
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        let leftEdgeFrame = edgeSwitchCoordinator.edgePanelFrameForTesting
+        check(
+            rightEdgeFrame != nil
+                && leftEdgeFrame != nil
+                && leftEdgeFrame!.minX < rightEdgeFrame!.minX - 100,
+            "changing the deck side repositions the collapsed edge UI immediately without another click"
+        )
+        check(
+            edgeSwitchCoordinator.edgeInteractionRefreshMatchesCommittedEdgeForTesting,
+            "the moved edge panel refreshes hover activation only after the new side is committed"
+        )
+        let switchedActivationViews = edgeSwitchCoordinator.edgePanelContentViewForTesting.map {
+            descendants(of: $0, as: RestingDeckActivationView.self)
+        } ?? []
+        check(
+            switchedActivationViews.count == 1 && !switchedActivationViews[0].trackingAreas.isEmpty,
+            "the switched resting edge owns a live native hover tracking area"
+        )
+        switchedActivationViews.first?.mouseEntered(with: NSEvent.enterExitEvent(
+            with: .mouseEntered,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: edgeSwitchCoordinator.edgePanelContentViewForTesting?.window?.windowNumber ?? 0,
+            context: nil,
+            eventNumber: 0,
+            trackingNumber: 0,
+            userData: nil
+        )!)
+        check(
+            edgeSwitchStore.deckState.showsTabs,
+            "hovering the new screen edge after switching sides fans the labels without a click"
+        )
+        edgeSwitchCoordinator.stop()
+        windowSettings.deckEdge = .right
         let windowCoordinator = PanelCoordinator(store: first, settings: windowSettings)
         let desktopWindow = windowCoordinator.makeDesktopNoteWindow(for: first.notes[0].id)
         desktopWindow.orderFrontRegardless()
@@ -511,6 +973,8 @@ enum SelfCheck {
         } else {
             check(false, "the enlarged desktop note can be rendered for layout verification")
         }
+        desktopWindow.orderOut(nil)
+        windowCoordinator.stop()
 
         let desktopExcludedPlan = DeckLayout.plan(
             notes: first.notes,
@@ -625,8 +1089,9 @@ enum SelfCheck {
         if let id = first.activeNoteID { first.select(id) }
         first.togglePinned()
         first.handleOutsideClick(keepDeckOpen: true)
-        check(!first.isExpanded, "an explicit outside click closes even a pinned note")
+        check(first.isExpanded, "an outside click keeps a pinned note open and actually on top")
         first.togglePinned()
+        first.handleOutsideClick(keepDeckOpen: true)
 
         first.updateTitle("持久化测试")
         first.updateBody("正文保持原样")
@@ -671,6 +1136,17 @@ enum SelfCheck {
             try? FileHandle.standardError.write(contentsOf: data)
             exit(EXIT_FAILURE)
         }
+    }
+
+    private static func descendants<ViewType: NSView>(
+        of root: NSView,
+        as type: ViewType.Type
+    ) -> [ViewType] {
+        var matches = root is ViewType ? [root as! ViewType] : []
+        for child in root.subviews {
+            matches.append(contentsOf: descendants(of: child, as: type))
+        }
+        return matches
     }
 
     private static func write<Content: View>(

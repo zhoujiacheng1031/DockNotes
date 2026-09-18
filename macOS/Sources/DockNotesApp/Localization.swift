@@ -15,6 +15,7 @@ enum L10nKey: String {
     case addTask
     case newNote
     case appearance
+    case appearanceSettingsHint
     case warmPaper
     case collapse
     case pin
@@ -31,6 +32,9 @@ enum L10nKey: String {
     case moreNotes
     case customColor
     case dueDate
+    case timeInput
+    case timeInputHint
+    case invalidTime
     case reminderHint
     case today
     case overdue
@@ -93,6 +97,13 @@ enum L10nKey: String {
     case aiModel
     case aiAPIKey
     case aiAPIKeyHint
+    case aiConnection
+    case recommendedModels
+    case customModel
+    case saveConfiguration
+    case configurationSaved
+    case configurationSaveFailed
+    case restoreDefault
     case aiPrompt
     case send
     case aiResponse
@@ -129,6 +140,7 @@ enum L10n {
         .addTask: "添加待办事项…",
         .newNote: "新建便签",
         .appearance: "外观",
+        .appearanceSettingsHint: "在一个页面里调整界面、侧边标签与便签显示。",
         .warmPaper: "暖色纸张",
         .collapse: "收起便签",
         .pin: "固定",
@@ -145,6 +157,9 @@ enum L10n {
         .moreNotes: "更多便签",
         .customColor: "自定义颜色",
         .dueDate: "截止日期与时间",
+        .timeInput: "手动输入时间",
+        .timeInputHint: "支持 21:30 或 9:30 PM",
+        .invalidTime: "请输入有效时间，例如 21:30 或 9:30 PM。",
         .reminderHint: "设置后将在截止时间发送 macOS 本地提醒；首次使用需要允许通知。",
         .today: "今天",
         .overdue: "已逾期",
@@ -207,6 +222,13 @@ enum L10n {
         .aiModel: "模型名称",
         .aiAPIKey: "API Key（可选）",
         .aiAPIKeyHint: "API Key 保存在 macOS 钥匙串中，不写入便签文件。",
+        .aiConnection: "连接配置",
+        .recommendedModels: "推荐模型",
+        .customModel: "也可以直接输入服务商支持的模型名称",
+        .saveConfiguration: "保存 AI 配置",
+        .configurationSaved: "配置已保存，API Key 已写入 macOS 钥匙串",
+        .configurationSaveFailed: "普通配置已保存，但 API Key 无法写入钥匙串",
+        .restoreDefault: "恢复默认地址",
         .aiPrompt: "询问、总结或改写当前便签…",
         .send: "发送",
         .aiResponse: "AI 回复",
@@ -242,6 +264,7 @@ enum L10n {
         .addTask: "Add a to-do…",
         .newNote: "New note",
         .appearance: "Appearance",
+        .appearanceSettingsHint: "Adjust the interface, edge tabs, and note presentation in one place.",
         .warmPaper: "Warm paper",
         .collapse: "Collapse note",
         .pin: "Pin",
@@ -258,6 +281,9 @@ enum L10n {
         .moreNotes: "More Notes",
         .customColor: "Custom Color",
         .dueDate: "Deadline Date & Time",
+        .timeInput: "Enter Time",
+        .timeInputHint: "Use 21:30 or 9:30 PM",
+        .invalidTime: "Enter a valid time, such as 21:30 or 9:30 PM.",
         .reminderHint: "DockNotes sends a local macOS reminder at the deadline. Notification permission is requested the first time.",
         .today: "Today",
         .overdue: "Overdue",
@@ -320,6 +346,13 @@ enum L10n {
         .aiModel: "Model",
         .aiAPIKey: "API Key (Optional)",
         .aiAPIKeyHint: "Your API key is stored in macOS Keychain, never in the notes file.",
+        .aiConnection: "Connection",
+        .recommendedModels: "Recommended models",
+        .customModel: "You can also enter any model name supported by your provider",
+        .saveConfiguration: "Save AI Configuration",
+        .configurationSaved: "Settings saved; API key stored in macOS Keychain",
+        .configurationSaveFailed: "Settings were saved, but the API key could not be stored in Keychain",
+        .restoreDefault: "Restore Default URL",
         .aiPrompt: "Ask, summarize, or rewrite this note…",
         .send: "Send",
         .aiResponse: "AI Response",

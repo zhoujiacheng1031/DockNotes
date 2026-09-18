@@ -1,6 +1,10 @@
 import AppKit
 import Foundation
 
+extension Notification.Name {
+    static let dockNotesPointerReleased = Notification.Name("DockNotes.pointerReleased")
+}
+
 enum DeadlineStatus: Equatable {
     case upcoming
     case today
@@ -54,6 +58,55 @@ struct DeadlinePresentation: Equatable {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.setLocalizedDateFormatFromTemplate(template)
         return formatter.string(from: date)
+    }
+}
+
+enum ReminderTimeInput {
+    static func parse(_ input: String, on date: Date, calendar: Calendar = .current) -> Date? {
+        var normalized = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "：", with: ":")
+            .uppercased()
+        if normalized.hasPrefix("上午") {
+            normalized = String(normalized.dropFirst(2)).trimmingCharacters(in: .whitespaces) + " AM"
+        } else if normalized.hasPrefix("下午") {
+            normalized = String(normalized.dropFirst(2)).trimmingCharacters(in: .whitespaces) + " PM"
+        }
+
+        let pattern = #"^(\d{1,2})(?::(\d{1,2}))?\s*(AM|PM)?$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: normalized,
+                range: NSRange(location: 0, length: (normalized as NSString).length)
+              ),
+              match.range.location != NSNotFound else { return nil }
+
+        let source = normalized as NSString
+        guard let hour = Int(source.substring(with: match.range(at: 1))) else { return nil }
+        let minuteRange = match.range(at: 2)
+        let minute = minuteRange.location == NSNotFound ? 0 : Int(source.substring(with: minuteRange)) ?? -1
+        guard (0...59).contains(minute) else { return nil }
+
+        let meridiemRange = match.range(at: 3)
+        let resolvedHour: Int
+        if meridiemRange.location != NSNotFound {
+            guard (1...12).contains(hour) else { return nil }
+            let meridiem = source.substring(with: meridiemRange)
+            resolvedHour = hour % 12 + (meridiem == "PM" ? 12 : 0)
+        } else {
+            guard (0...23).contains(hour) else { return nil }
+            resolvedHour = hour
+        }
+
+        return calendar.date(bySettingHour: resolvedHour, minute: minute, second: 0, of: date)
+    }
+
+    static func format(_ date: Date, calendar: Calendar = .current) -> String {
+        String(
+            format: "%02d:%02d",
+            calendar.component(.hour, from: date),
+            calendar.component(.minute, from: date)
+        )
     }
 }
 

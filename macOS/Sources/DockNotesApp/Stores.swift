@@ -21,6 +21,20 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         case .anthropic: "messages"
         }
     }
+
+    var defaultEndpoint: String {
+        switch self {
+        case .openAICompatible: "https://api.openai.com/v1"
+        case .anthropic: "https://api.anthropic.com/v1"
+        }
+    }
+
+    var suggestedModels: [String] {
+        switch self {
+        case .openAICompatible: ["gpt-5", "gpt-5-mini", "gpt-4.1"]
+        case .anthropic: ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"]
+        }
+    }
 }
 
 enum ObsidianBackupFailure: Equatable {
@@ -63,8 +77,8 @@ final class AppSettings: ObservableObject {
         didSet {
             guard aiProvider != oldValue else { return }
             defaults.set(aiProvider.rawValue, forKey: Key.aiProvider)
-            aiEndpoint = storedAIEndpoint(for: aiProvider)
-            aiModel = storedAIModel(for: aiProvider)
+            aiEndpoint = loadStoredAIEndpoint(for: aiProvider)
+            aiModel = loadStoredAIModel(for: aiProvider)
             aiAPIKey = AIKeychain.read(provider: aiProvider) ?? ""
         }
     }
@@ -74,7 +88,8 @@ final class AppSettings: ObservableObject {
     @Published var aiModel: String {
         didSet { defaults.set(aiModel, forKey: modelKey(for: aiProvider)) }
     }
-    @Published var aiAPIKey: String { didSet { AIKeychain.write(aiAPIKey, provider: aiProvider) } }
+    @Published private(set) var aiAPIKey: String
+    @Published private(set) var aiCredentialStorageFailed = false
     @Published var obsidianBackupEnabled: Bool {
         didSet { defaults.set(obsidianBackupEnabled, forKey: Key.obsidianBackupEnabled) }
     }
@@ -97,8 +112,8 @@ final class AppSettings: ObservableObject {
         aiAPIKey = ""
         obsidianBackupEnabled = defaults.bool(forKey: Key.obsidianBackupEnabled)
         obsidianVaultPath = defaults.string(forKey: Key.obsidianVaultPath) ?? ""
-        aiEndpoint = storedAIEndpoint(for: aiProvider)
-        aiModel = storedAIModel(for: aiProvider)
+        aiEndpoint = loadStoredAIEndpoint(for: aiProvider)
+        aiModel = loadStoredAIModel(for: aiProvider)
         aiAPIKey = AIKeychain.read(provider: aiProvider) ?? ""
     }
 
@@ -109,6 +124,35 @@ final class AppSettings: ObservableObject {
     var isAIConfigured: Bool {
         !aiEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !aiModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @discardableResult
+    func saveAIConfiguration(
+        provider: AIProvider,
+        endpoint: String,
+        model: String,
+        apiKey: String
+    ) -> Bool {
+        aiProvider = provider
+        aiEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        aiModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        aiAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let credentialSaved = AIKeychain.write(aiAPIKey, provider: provider)
+        aiCredentialStorageFailed = !credentialSaved
+        defaults.synchronize()
+        return credentialSaved
+    }
+
+    func storedAIEndpoint(for provider: AIProvider) -> String {
+        loadStoredAIEndpoint(for: provider)
+    }
+
+    func storedAIModel(for provider: AIProvider) -> String {
+        loadStoredAIModel(for: provider)
+    }
+
+    func storedAIAPIKey(for provider: AIProvider) -> String {
+        AIKeychain.read(provider: provider) ?? ""
     }
 
     var obsidianVaultURL: URL? {
@@ -153,12 +197,11 @@ final class AppSettings: ObservableObject {
         provider == .anthropic ? Key.anthropicModel : Key.aiModel
     }
 
-    private func storedAIEndpoint(for provider: AIProvider) -> String {
-        defaults.string(forKey: endpointKey(for: provider))
-            ?? (provider == .anthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1")
+    private func loadStoredAIEndpoint(for provider: AIProvider) -> String {
+        defaults.string(forKey: endpointKey(for: provider)) ?? provider.defaultEndpoint
     }
 
-    private func storedAIModel(for provider: AIProvider) -> String {
+    private func loadStoredAIModel(for provider: AIProvider) -> String {
         defaults.string(forKey: modelKey(for: provider)) ?? ""
     }
 }
@@ -186,7 +229,8 @@ private enum AIKeychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ value: String, provider: AIProvider) {
+    @discardableResult
+    static func write(_ value: String, provider: AIProvider) -> Bool {
         let account = provider.rawValue
         let identity: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -194,16 +238,17 @@ private enum AIKeychain {
             kSecAttrAccount: account
         ]
         if value.isEmpty {
-            SecItemDelete(identity as CFDictionary)
-            return
+            let status = SecItemDelete(identity as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
         }
         let data = Data(value.utf8)
         let status = SecItemUpdate(identity as CFDictionary, [kSecValueData: data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = identity
             item[kSecValueData] = data
-            SecItemAdd(item as CFDictionary, nil)
+            return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
         }
+        return status == errSecSuccess
     }
 }
 
@@ -219,6 +264,20 @@ final class NotesStore: ObservableObject {
     @Published private(set) var lastObsidianBackupURL: URL?
     @Published private(set) var lastObsidianBackupError: ObsidianBackupFailure?
     private var restTask: Task<Void, Never>?
+    private var trackedDeckLabels: Set<UUID> = []
+    private var pointerIsInsideDeck = false
+
+    func beginTrackingDeckLabel(_ id: UUID) {
+        trackedDeckLabels.insert(id)
+        restTask?.cancel()
+        restTask = nil
+    }
+
+    func endTrackingDeckLabel(_ id: UUID, keepOpen: Bool, pointerInside: Bool? = nil) {
+        trackedDeckLabels.remove(id)
+        if let pointerInside { pointerIsInsideDeck = pointerInside }
+        if !pointerIsInsideDeck { pointerExitedDeck(keepOpen: keepOpen) }
+    }
     private let fileURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -233,8 +292,7 @@ final class NotesStore: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
 
         if let data = try? Data(contentsOf: self.fileURL),
-           let decoded = try? decoder.decode([DockNote].self, from: data),
-           !decoded.isEmpty {
+           let decoded = try? decoder.decode([DockNote].self, from: data) {
             let migratedNotes = decoded.enumerated().map { index, note in
                 var migrated = note
                 migrated.colorHex = NotePalette.migrated(note.colorHex)
@@ -266,13 +324,15 @@ final class NotesStore: ObservableObject {
     }
 
     func pointerEnteredDeck() {
+        pointerIsInsideDeck = true
         restTask?.cancel()
         restTask = nil
         if deckState == .resting { deckState = .fanned }
     }
 
     func pointerExitedDeck(keepOpen: Bool) {
-        guard !keepOpen, deckState == .fanned else { return }
+        pointerIsInsideDeck = false
+        guard trackedDeckLabels.isEmpty, !keepOpen, deckState == .fanned else { return }
         scheduleRest()
     }
 
@@ -327,8 +387,14 @@ final class NotesStore: ObservableObject {
     }
 
     func handleOutsideClick(keepDeckOpen: Bool = false) {
+        guard trackedDeckLabels.isEmpty else { return }
         isPreferencesPresented = false
         if isExpanded {
+            if activeNote?.isPinned == true {
+                restTask?.cancel()
+                restTask = nil
+                return
+            }
             restTask?.cancel()
             deckState = keepDeckOpen ? .fanned : .resting
         } else if deckState == .fanned, !keepDeckOpen {
@@ -503,6 +569,12 @@ final class NotesStore: ObservableObject {
     }
 
     func delete(_ noteID: DockNote.ID) {
+        if let index = archivedNotes.firstIndex(where: { $0.id == noteID }) {
+            archivedNotes.remove(at: index)
+            DueReminderScheduler.cancel(for: noteID)
+            persist()
+            return
+        }
         guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
         notes.remove(at: index)
         DueReminderScheduler.cancel(for: noteID)
@@ -541,7 +613,7 @@ final class NotesStore: ObservableObject {
             try? await Task.sleep(for: .milliseconds(650))
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, self.deckState == .fanned else { return }
+                guard let self, self.trackedDeckLabels.isEmpty, self.deckState == .fanned else { return }
                 self.deckState = .resting
                 self.restTask = nil
             }

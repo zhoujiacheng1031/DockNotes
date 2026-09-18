@@ -31,7 +31,16 @@ build_number="$(date '+%Y%m%d%H%M%S')"
 install -m 644 "$project_dir/Sources/DockNotesApp/Resources/paper-texture.png" "$resources_dir/paper-texture.png"
 install -m 644 "$project_dir/Sources/DockNotesApp/Resources/app-icon.png" "$resources_dir/app-icon.png"
 install -m 644 "$project_dir/Sources/DockNotesApp/Resources/tray-icon.png" "$resources_dir/tray-icon.png"
-codesign --force --sign - "$staging_app"
+# Release builders can provide a trusted signing identity. Local builds remain
+# ad-hoc signed without weakening the Keychain boundary to an identifier-only
+# designated requirement.
+if [[ -n "${DOCKNOTES_CODESIGN_IDENTITY:-}" ]]; then
+    codesign --force --options runtime --timestamp \
+        --sign "$DOCKNOTES_CODESIGN_IDENTITY" \
+        "$staging_app"
+else
+    codesign --force --sign - "$staging_app"
+fi
 
 # Reusing the existing bundle directory preserves Finder's creation date and
 # makes it easy to reopen a stale process. Install a freshly-created bundle and

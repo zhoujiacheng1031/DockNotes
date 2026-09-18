@@ -18,8 +18,14 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         isPinned ? .floating : .normal
     }
 
-    static func localClickIsOutsideApp(hasWindow: Bool) -> Bool {
-        !hasWindow
+    static func localClickIsOutsideApp(
+        hasWindow: Bool,
+        point: NSPoint? = nil,
+        appWindowFrames: [NSRect] = []
+    ) -> Bool {
+        if hasWindow { return false }
+        guard let point else { return true }
+        return !appWindowFrames.contains { $0.contains(point) }
     }
 
     private enum Metrics {
@@ -27,12 +33,13 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         static let deckWidth: CGFloat = DeckLayout.windowWidth
         static let visibleDeckWidth: CGFloat = DeckLayout.windowWidth
         static let noteDeckGap: CGFloat = DeckLayout.windowWidth
-        static let settingsSize = CGSize(width: 680, height: 520)
+        static let settingsSize = CGSize(width: 760, height: 560)
         static let librarySize = CGSize(width: 680, height: 520)
     }
 
     private let store: NotesStore
     private let settings: AppSettings
+    private let visibleFrameOverride: NSRect?
     private var notePanel: TransparentPanel?
     private var deckPanel: TransparentPanel?
     private var settingsWindow: NSWindow?
@@ -44,9 +51,14 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var liveResizingDesktopWindows = Set<ObjectIdentifier>()
 
-    init(store: NotesStore, settings: AppSettings) {
+    var edgePanelFrameForTesting: NSRect? { deckPanel?.frame }
+    var edgePanelContentViewForTesting: NSView? { deckPanel?.contentView }
+    private(set) var edgeInteractionRefreshMatchesCommittedEdgeForTesting = true
+
+    init(store: NotesStore, settings: AppSettings, visibleFrameOverride: NSRect? = nil) {
         self.store = store
         self.settings = settings
+        self.visibleFrameOverride = visibleFrameOverride
     }
 
     func start() {
@@ -201,7 +213,18 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         settings.$deckEdge
             .dropFirst()
             .removeDuplicates()
-            .sink { [weak self] _ in self?.positionEdgeWindows() }
+            .sink { [weak self] edge in
+                // @Published emits from willSet. Use the emitted edge directly;
+                // reading settings.deckEdge here would still return the old side
+                // until the assignment completes, leaving the panel in place
+                // until an unrelated click triggers another positioning pass.
+                guard let self else { return }
+                self.positionEdgeWindows(edge: edge, refreshInteractions: false)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.settings.deckEdge == edge else { return }
+                    self.refreshEdgeInteractions(expectedEdge: edge)
+                }
+            }
             .store(in: &cancellables)
     }
 
@@ -341,6 +364,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         panel.hasShadow = false
         panel.level = .floating
         panel.hidesOnDeactivate = false
+        panel.acceptsMouseMovedEvents = true
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.animationBehavior = .none
@@ -353,13 +377,22 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         return panel
     }
 
-    private func positionEdgeWindows() {
-        guard let screen = deckPanel?.screen ?? NSScreen.main else { return }
-        let visible = screen.visibleFrame
+    private func positionEdgeWindows(
+        edge requestedEdge: DeckEdge? = nil,
+        refreshInteractions: Bool = true
+    ) {
+        let visible: NSRect
+        if let visibleFrameOverride {
+            visible = visibleFrameOverride
+        } else {
+            guard let screen = deckPanel?.screen ?? NSScreen.main else { return }
+            visible = screen.visibleFrame
+        }
+        let edge = requestedEdge ?? settings.deckEdge
         let deckSize = deckPanel?.frame.size ?? CGSize(width: Metrics.deckWidth, height: 520)
         let deckX: CGFloat
         let noteX: CGFloat
-        if settings.deckEdge == .right {
+        if edge == .right {
             deckX = visible.maxX - Metrics.visibleDeckWidth
             noteX = deckX - Metrics.noteDeckGap - Metrics.noteSize.width
         } else {
@@ -374,6 +407,47 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             NSRect(x: noteX, y: visible.midY - Metrics.noteSize.height / 2, width: Metrics.noteSize.width, height: Metrics.noteSize.height),
             display: true
         )
+        if refreshInteractions {
+            refreshEdgeInteractions(expectedEdge: edge)
+        }
+    }
+
+    private func refreshEdgeInteractions(expectedEdge: DeckEdge) {
+        edgeInteractionRefreshMatchesCommittedEdgeForTesting = settings.deckEdge == expectedEdge
+        deckPanel?.contentView?.needsLayout = true
+        deckPanel?.contentView?.layoutSubtreeIfNeeded()
+        if let contentView = deckPanel?.contentView {
+            refreshTrackingAreas(in: contentView)
+        }
+        deckPanel?.displayIfNeeded()
+
+        guard store.deckState == .resting, let panel = deckPanel else { return }
+        let activationRect: NSRect
+        if expectedEdge == .right {
+            activationRect = NSRect(
+                x: panel.frame.maxX - DeckLayout.restingActivationWidth,
+                y: panel.frame.minY,
+                width: DeckLayout.restingActivationWidth,
+                height: panel.frame.height
+            )
+        } else {
+            activationRect = NSRect(
+                x: panel.frame.minX,
+                y: panel.frame.minY,
+                width: DeckLayout.restingActivationWidth,
+                height: panel.frame.height
+            )
+        }
+        if activationRect.contains(NSEvent.mouseLocation) {
+            store.pointerEnteredDeck()
+        }
+    }
+
+    private func refreshTrackingAreas(in view: NSView) {
+        view.updateTrackingAreas()
+        for subview in view.subviews {
+            refreshTrackingAreas(in: subview)
+        }
     }
 
     private func showNotePanel(animated: Bool) {
@@ -437,12 +511,26 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func installOutsideClickMonitors() {
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            self?.handleLocalPointerDown(event)
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp]
+        ) { [weak self] event in
+            if event.type == .leftMouseUp {
+                NotificationCenter.default.post(name: .dockNotesPointerReleased, object: nil)
+            } else {
+                self?.handleLocalPointerDown(event)
+            }
             return event
         }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.handlePointerDown(at: NSEvent.mouseLocation) }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp]
+        ) { [weak self] event in
+            Task { @MainActor in
+                if event.type == .leftMouseUp {
+                    NotificationCenter.default.post(name: .dockNotesPointerReleased, object: nil)
+                } else {
+                    self?.handlePointerDown(at: NSEvent.mouseLocation)
+                }
+            }
         }
     }
 
@@ -461,16 +549,37 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func handleLocalPointerDown(_ event: NSEvent) {
-        guard !Self.localClickIsOutsideApp(hasWindow: event.window != nil), let window = event.window else {
+        let point = NSEvent.mouseLocation
+        guard !Self.localClickIsOutsideApp(
+            hasWindow: event.window != nil,
+            point: point,
+            appWindowFrames: visibleAppWindowFrames
+        ) else {
             store.handleOutsideClick(keepDeckOpen: settings.keepDeckOpen)
             return
         }
+        // Borderless non-activating panels can deliver a local mouse event
+        // without attaching their NSWindow. The screen point is authoritative
+        // in that case; returning here keeps a label drag from being mistaken
+        // for an outside click.
+        guard let window = event.window else { return }
         if window === settingsWindow || window === libraryWindow { return }
 
         // Local events already belong to DockNotes. This includes SwiftUI's
         // separate popover window used by More Notes, so it must not be treated
         // as an outside click before the row button receives the same event.
         if store.isPreferencesPresented { store.isPreferencesPresented = false }
+    }
+
+    private var visibleAppWindowFrames: [NSRect] {
+        var frames: [NSRect] = []
+        for window in [settingsWindow, libraryWindow, notePanel, deckPanel] {
+            if let window, window.isVisible { frames.append(window.frame) }
+        }
+        for window in desktopNoteWindows.values where window.isVisible {
+            frames.append(window.frame)
+        }
+        return frames
     }
 
     private func handlePointerDown(at point: NSPoint) {

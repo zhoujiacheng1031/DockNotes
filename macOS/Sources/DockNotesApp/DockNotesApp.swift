@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class DockNotesRuntime {
+    static let shared = DockNotesRuntime()
+
+    let store = NotesStore()
+    let settings = AppSettings()
+
+    private init() {}
+}
+
 @main
 struct DockNotesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -31,15 +41,18 @@ struct DockNotesApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsWindowView(
+                store: DockNotesRuntime.shared.store,
+                settings: DockNotesRuntime.shared.settings
+            )
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let store = NotesStore()
-    private let settings = AppSettings()
+    private let store = DockNotesRuntime.shared.store
+    private let settings = DockNotesRuntime.shared.settings
     private var panelCoordinator: PanelCoordinator?
     private var statusItem: NSStatusItem?
 

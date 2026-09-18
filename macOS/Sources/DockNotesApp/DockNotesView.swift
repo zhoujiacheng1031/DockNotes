@@ -156,7 +156,6 @@ struct DeckWindowView: View {
     let availableHeight: CGFloat
     var isDesignPreview = false
     @State private var isOverflowPresented = false
-    @State private var hoveredNoteID: DockNote.ID?
     @StateObject private var tabDrag = TabDragCoordinator()
 
     private var plan: DeckPlan {
@@ -209,45 +208,56 @@ struct DeckWindowView: View {
                                 tiltDegrees: DeckLayout.tiltDegrees(for: slot),
                                 isDragging: tabDrag.noteID == note.id
                             )
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                hoveredNoteID = nil
-                                store.select(note.id)
-                            }
-                            .onHover { hovering in
-                                guard tabDrag.noteID == nil else {
-                                    hoveredNoteID = nil
-                                    return
-                                }
-                                if hovering {
-                                    hoveredNoteID = note.id
-                                } else if hoveredNoteID == note.id {
-                                    hoveredNoteID = nil
-                                }
-                            }
-                            .popover(
-                                isPresented: Binding(
-                                    get: { hoveredNoteID == note.id },
-                                    set: { isPresented in
-                                        if !isPresented, hoveredNoteID == note.id {
-                                            hoveredNoteID = nil
+                            .overlay(alignment: settings.deckEdge == .right ? .trailing : .leading) {
+                                if !isDesignPreview {
+                                    TabPointerDragSurface(
+                                        preview: AnyView(EdgeTabHoverCard(note: note, language: settings.language)),
+                                        edge: settings.deckEdge,
+                                        previewsEnabled: tabDrag.noteID == nil,
+                                        onTrackingChanged: { tracking, pointerInside in
+                                            if tracking {
+                                                store.beginTrackingDeckLabel(note.id)
+                                            } else {
+                                                store.endTrackingDeckLabel(
+                                                    note.id, keepOpen: settings.keepDeckOpen, pointerInside: pointerInside
+                                                )
+                                            }
+                                        },
+                                        onClick: {
+                                            tabDrag.recoverInterruptedDrag(noteID: note.id)
+                                            store.select(note.id)
+                                        },
+                                        onDragChanged: { translation in
+                                            updateTabDrag(
+                                                noteID: note.id,
+                                                sourceSlot: slot,
+                                                translation: translation
+                                            )
+                                        },
+                                        onDragEnded: { translation in
+                                            finishTabDrag(
+                                                noteID: note.id,
+                                                sourceSlot: slot,
+                                                translation: translation
+                                            )
+                                        },
+                                        onDragCancelled: {
+                                            tabDrag.recoverInterruptedDrag(noteID: note.id)
                                         }
-                                    }
-                                ),
-                                arrowEdge: settings.deckEdge == .right ? .trailing : .leading
-                            ) {
-                                EdgeTabHoverCard(note: note, language: settings.language)
+                                    )
+                                    .frame(
+                                        width: DeckLayout.tabWidth,
+                                        height: DeckLayout.tabVisualHeight
+                                    )
+                                }
                             }
                             .accessibilityLabel(note.title)
                             .accessibilityAddTraits(.isButton)
                             .modifier(
-                                LocalTabDragModifier(
-                                    enabled: !isDesignPreview,
+                                TabDragVisualModifier(
                                     noteID: note.id,
                                     slot: slot,
-                                    slotCount: plan.slots.count,
                                     tabPitch: tabPitch,
-                                    store: store,
                                     dragCoordinator: tabDrag
                                 )
                             )
@@ -304,31 +314,80 @@ struct DeckWindowView: View {
                     )
                 )
             } else {
-                RestingDeckIndicator(notes: store.notes, availableHeight: availableHeight, edge: settings.deckEdge)
-                    .transition(.opacity)
+                ZStack(alignment: settings.deckEdge == .right ? .trailing : .leading) {
+                    RestingDeckIndicator(
+                        notes: store.notes,
+                        availableHeight: availableHeight,
+                        edge: settings.deckEdge
+                    )
+                    .allowsHitTesting(false)
+
+                    RestingDeckActivationSurface {
+                        if store.deckState == .resting { store.pointerEnteredDeck() }
+                    }
+                        .frame(width: DeckLayout.restingActivationWidth, height: availableHeight)
+                        .accessibilityLabel("DockNotes")
+                }
+                .frame(width: DeckLayout.windowWidth, height: availableHeight)
+                .transition(.opacity)
             }
         }
         .frame(width: DeckLayout.windowWidth, height: availableHeight, alignment: .center)
         .opacity(settings.collapsedOpacity)
         .background(Color.clear)
         .contentShape(Rectangle())
-        .onHover { hovering in
-            if hovering {
-                store.pointerEnteredDeck()
-            } else {
-                store.pointerExitedDeck(keepOpen: settings.keepDeckOpen)
+        .background {
+            DeckPointerBoundary { hovering in
+                guard store.deckState != .resting else { return }
+                if hovering {
+                    store.pointerEnteredDeck()
+                } else {
+                    store.pointerExitedDeck(keepOpen: settings.keepDeckOpen)
+                }
             }
         }
-        .onTapGesture {
-            // Borderless non-activating panels can miss hover delivery under
-            // some accessibility and remote-control configurations. The pill
-            // remains directly clickable as a deterministic wake-up path.
-            if store.deckState == .resting { store.pointerEnteredDeck() }
-        }
-        .onChange(of: tabDrag.noteID) { _, noteID in
-            if noteID != nil { hoveredNoteID = nil }
-        }
         .animation(.easeOut(duration: 0.16), value: store.deckState)
+    }
+
+    private func updateTabDrag(
+        noteID: DockNote.ID,
+        sourceSlot: Int,
+        translation: CGFloat
+    ) {
+        tabDrag.begin(noteID: noteID, sourceSlot: sourceSlot)
+        let target = DeckLayout.dragTarget(
+            sourceSlot: tabDrag.sourceSlot,
+            translation: translation,
+            slotCount: plan.slots.count,
+            pitch: tabPitch
+        )
+        tabDrag.update(translation: translation, targetSlot: target, noteID: noteID)
+    }
+
+    private func finishTabDrag(
+        noteID: DockNote.ID,
+        sourceSlot: Int,
+        translation: CGFloat
+    ) {
+        tabDrag.begin(noteID: noteID, sourceSlot: sourceSlot)
+        let destination = DeckLayout.dragTarget(
+            sourceSlot: tabDrag.sourceSlot,
+            translation: translation,
+            slotCount: plan.slots.count,
+            pitch: tabPitch
+        )
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            tabDrag.beginSettling(
+                destinationSlot: destination,
+                translation: translation,
+                pitch: tabPitch,
+                noteID: noteID
+            )
+            store.moveNote(noteID, to: destination)
+        }
+        tabDrag.completeSettling(noteID: noteID)
     }
 
     private func deckButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
@@ -353,29 +412,38 @@ private struct PositionedTab: Identifiable {
 }
 
 @MainActor
-private final class TabDragCoordinator: ObservableObject {
+final class TabDragCoordinator: ObservableObject {
     @Published private(set) var noteID: DockNote.ID?
     @Published private(set) var sourceSlot = 0
     @Published private(set) var targetSlot = 0
     @Published private(set) var settlingOffset: CGFloat = 0
+    @Published private(set) var liveTranslation: CGFloat = 0
     @Published private(set) var isSettling = false
     private(set) var lastTranslation: CGFloat = 0
+    private var settlingTask: Task<Void, Never>?
+    private var sessionGeneration: UInt64 = 0
 
     func begin(noteID: DockNote.ID, sourceSlot: Int) {
-        if self.noteID != noteID {
-            self.noteID = noteID
-            self.sourceSlot = sourceSlot
-            targetSlot = sourceSlot
-            settlingOffset = 0
-            isSettling = false
-            lastTranslation = 0
-        }
+        guard self.noteID != noteID || isSettling else { return }
+        settlingTask?.cancel()
+        settlingTask = nil
+        sessionGeneration &+= 1
+        self.noteID = noteID
+        self.sourceSlot = sourceSlot
+        targetSlot = sourceSlot
+        settlingOffset = 0
+        liveTranslation = 0
+        isSettling = false
+        lastTranslation = 0
     }
 
     func update(translation: CGFloat, targetSlot: Int, noteID: DockNote.ID) {
         guard self.noteID == noteID else { return }
         lastTranslation = translation
-        self.targetSlot = targetSlot
+        liveTranslation = translation
+        if self.targetSlot != targetSlot {
+            self.targetSlot = targetSlot
+        }
     }
 
     func beginSettling(
@@ -396,34 +464,51 @@ private final class TabDragCoordinator: ObservableObject {
         isSettling = true
     }
 
-    func updateSettlingOffset(_ offset: CGFloat, noteID: DockNote.ID) {
-        guard self.noteID == noteID else { return }
-        settlingOffset = offset
+    func completeSettling(noteID: DockNote.ID) {
+        guard self.noteID == noteID, isSettling else { return }
+        settlingTask?.cancel()
+        withAnimation(.spring(response: 0.20, dampingFraction: 0.90)) {
+            settlingOffset = 0
+        }
+        settlingTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled else { return }
+            self?.finish(noteID: noteID)
+        }
+    }
+
+    func recoverInterruptedDrag(noteID: DockNote.ID) {
+        guard self.noteID == noteID, !isSettling else { return }
+        finish(noteID: noteID)
+    }
+
+    func recoveryGeneration(noteID: DockNote.ID) -> UInt64? {
+        guard self.noteID == noteID else { return nil }
+        return sessionGeneration
+    }
+
+    func recoverInterruptedDrag(noteID: DockNote.ID, sessionGeneration: UInt64) {
+        guard self.sessionGeneration == sessionGeneration else { return }
+        recoverInterruptedDrag(noteID: noteID)
     }
 
     func finish(noteID: DockNote.ID) {
         guard self.noteID == noteID else { return }
+        settlingTask?.cancel()
+        settlingTask = nil
         self.noteID = nil
         settlingOffset = 0
+        liveTranslation = 0
         isSettling = false
         lastTranslation = 0
     }
 }
 
-private struct LocalDragGestureState: Equatable {
-    var isActive = false
-    var translation: CGFloat = 0
-}
-
-private struct LocalTabDragModifier: ViewModifier {
-    let enabled: Bool
+private struct TabDragVisualModifier: ViewModifier {
     let noteID: DockNote.ID
     let slot: Int
-    let slotCount: Int
     let tabPitch: CGFloat
-    @ObservedObject var store: NotesStore
     @ObservedObject var dragCoordinator: TabDragCoordinator
-    @GestureState private var gestureState = LocalDragGestureState()
 
     private var isDragging: Bool { dragCoordinator.noteID == noteID }
 
@@ -444,101 +529,35 @@ private struct LocalTabDragModifier: ViewModifier {
         if dragCoordinator.isSettling {
             return dragCoordinator.settlingOffset
         }
-        if gestureState.isActive {
-            return gestureState.translation
-        }
-        return dragCoordinator.settlingOffset
+        return dragCoordinator.liveTranslation
     }
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if enabled {
-            content
-                .offset(y: previewOffset)
-                .animation(
-                    .interactiveSpring(response: 0.24, dampingFraction: 0.82),
-                    value: dragCoordinator.targetSlot
-                )
-                .offset(y: dragOffset)
-                .scaleEffect(isDragging ? 1.045 : 1, anchor: .trailing)
-                .opacity(isDragging ? 0.94 : 1)
-                .zIndex(isDragging ? 100 : 0)
-                .shadow(color: Color.black.opacity(isDragging ? 0.24 : 0), radius: 11, x: -4, y: 4)
-                .animation(.easeOut(duration: 0.10), value: isDragging)
-                .highPriorityGesture(
-                    DragGesture(minimumDistance: 6)
-                        .updating($gestureState) { value, gestureState, transaction in
-                            transaction.disablesAnimations = true
-                            gestureState.isActive = true
-                            gestureState.translation = value.translation.height
-                        }
-                        .onChanged { value in
-                            dragCoordinator.begin(noteID: noteID, sourceSlot: slot)
-                            let target = DeckLayout.dragTarget(
-                                sourceSlot: dragCoordinator.sourceSlot,
-                                translation: value.translation.height,
-                                slotCount: slotCount,
-                                pitch: tabPitch
-                            )
-                            dragCoordinator.update(
-                                translation: value.translation.height,
-                                targetSlot: target,
-                                noteID: noteID
-                            )
-                        }
-                        .onEnded { value in
-                            dragCoordinator.begin(noteID: noteID, sourceSlot: slot)
-                            let destination = DeckLayout.dragTarget(
-                                sourceSlot: dragCoordinator.sourceSlot,
-                                translation: value.translation.height,
-                                slotCount: slotCount,
-                                pitch: tabPitch
-                            )
-                            var transaction = Transaction()
-                            transaction.disablesAnimations = true
-                            withTransaction(transaction) {
-                                dragCoordinator.beginSettling(
-                                    destinationSlot: destination,
-                                    translation: value.translation.height,
-                                    pitch: tabPitch,
-                                    noteID: noteID
-                                )
-                                store.moveNote(noteID, to: destination)
-                            }
-                            animateSettling()
-                        }
-                )
-                .onChange(of: gestureState.isActive) { _, isActive in
-                    guard !isActive,
-                          dragCoordinator.noteID == noteID,
-                          !dragCoordinator.isSettling else { return }
-                    // SwiftUI resets GestureState even when AppKit cancels the
-                    // gesture at a panel or screen edge. Clear the shared
-                    // session through the same settling path used by a drop.
-                    DispatchQueue.main.async {
-                        dragCoordinator.beginSettling(
-                            destinationSlot: dragCoordinator.sourceSlot,
-                            translation: dragCoordinator.lastTranslation,
-                            pitch: tabPitch,
-                            noteID: noteID
-                        )
-                        animateSettling()
-                    }
+        content
+            .offset(y: previewOffset)
+            .animation(
+                .interactiveSpring(response: 0.18, dampingFraction: 0.88),
+                value: dragCoordinator.targetSlot
+            )
+            .offset(y: dragOffset)
+            .scaleEffect(isDragging ? 1.035 : 1, anchor: .trailing)
+            .opacity(isDragging ? 0.96 : 1)
+            .zIndex(isDragging ? 100 : 0)
+            .shadow(color: Color.black.opacity(isDragging ? 0.20 : 0), radius: 9, x: -3, y: 3)
+            .onReceive(NotificationCenter.default.publisher(for: .dockNotesPointerReleased)) { _ in
+                guard let sessionGeneration = dragCoordinator.recoveryGeneration(noteID: noteID) else {
+                    return
                 }
-        } else {
-            content
-        }
-    }
-
-    private func animateSettling() {
-        DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
-                dragCoordinator.updateSettlingOffset(0, noteID: noteID)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                    dragCoordinator.recoverInterruptedDrag(
+                        noteID: noteID,
+                        sessionGeneration: sessionGeneration
+                    )
+                }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
-                dragCoordinator.finish(noteID: noteID)
+            .onDisappear {
+                dragCoordinator.recoverInterruptedDrag(noteID: noteID)
             }
-        }
     }
 }
 
@@ -548,18 +567,35 @@ private struct RestingDeckIndicator: View {
     let edge: DeckEdge
 
     var body: some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 4) {
             ForEach(Array(notes.prefix(8))) { note in
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                Capsule(style: .continuous)
                     .fill(note.gradient)
-                    .frame(width: 7, height: 18)
+                    .frame(width: 8, height: 20)
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .stroke(Color.white.opacity(0.48), lineWidth: 0.55)
+                    }
+                    .shadow(color: Color(hex: note.colorHex).opacity(0.16), radius: 1.5, x: 0, y: 1)
             }
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 4)
-        .background(Color.black.opacity(0.72), in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.5))
-        .frame(width: 22, height: availableHeight, alignment: .center)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 6)
+        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+        .background(Color.white.opacity(0.52), in: Capsule(style: .continuous))
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.92), Color.black.opacity(0.09)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.7
+                )
+        }
+        .shadow(color: Color.black.opacity(0.14), radius: 7, x: edge == .right ? -2 : 2, y: 2)
+        .frame(width: 26, height: availableHeight, alignment: .center)
         .frame(maxWidth: .infinity, alignment: edge == .right ? .trailing : .leading)
         .accessibilityLabel("DockNotes")
     }
@@ -1725,6 +1761,17 @@ private struct DueDatePopover: View {
     let note: DockNote
     @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
+    @State private var timeText: String
+    @State private var showsInvalidTime = false
+    @FocusState private var isTimeFieldFocused: Bool
+
+    init(note: DockNote, store: NotesStore, settings: AppSettings) {
+        self.note = note
+        self.store = store
+        self.settings = settings
+        let initialDate = note.dueDate ?? Date().addingTimeInterval(3_600)
+        _timeText = State(initialValue: ReminderTimeInput.format(initialDate))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1733,12 +1780,33 @@ private struct DueDatePopover: View {
                 "",
                 selection: Binding(
                     get: { note.dueDate ?? Date().addingTimeInterval(3_600) },
-                    set: { store.setDueDate($0, for: note.id, language: settings.language) }
+                    set: { date in
+                        timeText = ReminderTimeInput.format(date)
+                        showsInvalidTime = false
+                        store.setDueDate(date, for: note.id, language: settings.language)
+                    }
                 ),
                 displayedComponents: [.date, .hourAndMinute]
             )
             .datePickerStyle(.graphical)
             .labelsHidden()
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(settings.text(.timeInput))
+                    .font(.system(size: 11, weight: .semibold))
+                HStack(spacing: 8) {
+                    TextField(settings.text(.timeInputHint), text: $timeText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12).monospacedDigit())
+                        .focused($isTimeFieldFocused)
+                        .onSubmit(applyManualTime)
+                        .onChange(of: timeText) { _, _ in showsInvalidTime = false }
+                    Button(settings.text(.apply), action: applyManualTime)
+                }
+                Text(showsInvalidTime ? settings.text(.invalidTime) : settings.text(.timeInputHint))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(showsInvalidTime ? Color.red : Color.secondary)
+            }
             Text(settings.text(.reminderHint))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -1752,6 +1820,22 @@ private struct DueDatePopover: View {
         }
         .padding(14)
         .frame(width: 300)
+        .onChange(of: note.dueDate) { _, date in
+            guard !isTimeFieldFocused, let date else { return }
+            timeText = ReminderTimeInput.format(date)
+            showsInvalidTime = false
+        }
+    }
+
+    private func applyManualTime() {
+        let baseDate = note.dueDate ?? Date().addingTimeInterval(3_600)
+        guard let date = ReminderTimeInput.parse(timeText, on: baseDate) else {
+            showsInvalidTime = true
+            return
+        }
+        timeText = ReminderTimeInput.format(date)
+        showsInvalidTime = false
+        store.setDueDate(date, for: note.id, language: settings.language)
     }
 }
 
@@ -2247,18 +2331,43 @@ struct NotesLibraryView: View {
                                     .font(.system(size: 10))
                                     .foregroundStyle(.tertiary)
                                 if collection == .archived {
-                                    Button(settings.text(.restore)) {
+                                    libraryActionButton(
+                                        "arrow.uturn.backward",
+                                        label: settings.text(.restore)
+                                    ) {
                                         store.restoreArchived(note.id, language: settings.language)
                                     }
-                                        .buttonStyle(.borderless)
-                                } else {
-                                    Button {
-                                        store.openFromLibrary(note.id)
-                                    } label: {
-                                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    libraryActionButton(
+                                        "trash",
+                                        label: settings.text(.delete),
+                                        destructive: true
+                                    ) {
+                                        store.delete(note.id)
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help(settings.text(.allNotes))
+                                } else {
+                                    libraryActionButton(
+                                        "arrow.up.left.and.arrow.down.right",
+                                        label: settings.text(.allNotes)
+                                    ) {
+                                        store.openFromLibrary(note.id)
+                                    }
+                                    libraryActionButton(
+                                        "archivebox",
+                                        label: settings.text(.archive)
+                                    ) {
+                                        store.archive(
+                                            note.id,
+                                            obsidianDirectory: settings.obsidianVaultURL,
+                                            obsidianBackupEnabled: settings.obsidianBackupEnabled
+                                        )
+                                    }
+                                    libraryActionButton(
+                                        "trash",
+                                        label: settings.text(.delete),
+                                        destructive: true
+                                    ) {
+                                        store.delete(note.id)
+                                    }
                                 }
                             }
                             .padding(.horizontal, 14)
@@ -2273,232 +2382,395 @@ struct NotesLibraryView: View {
         .frame(width: 680, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
     }
+
+    private func libraryActionButton(
+        _ symbol: String,
+        label: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(destructive ? Color.red.opacity(0.82) : Color.secondary)
+                .frame(width: 26, height: 26)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
+        .dockNotesChromeButton()
+        .help(label)
+        .accessibilityLabel(label)
+    }
 }
 
 struct SettingsWindowView: View {
     private enum Section: String, CaseIterable {
-        case general
-        case deck
-        case notes
+        case appearance
         case ai
         case archive
     }
 
     @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
-    @State private var selection: Section = .general
+    @State private var selection: Section = .appearance
+    @State private var aiProviderDraft: AIProvider = .openAICompatible
+    @State private var aiEndpointDraft = ""
+    @State private var aiModelDraft = ""
+    @State private var aiAPIKeyDraft = ""
+    @State private var aiSaveResult: Bool?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                settingsTab(.general, symbol: "gearshape", title: settings.text(.general))
-                settingsTab(.deck, symbol: "rectangle.stack", title: settings.text(.deck))
-                settingsTab(.notes, symbol: "note.text", title: settings.text(.notes))
-                settingsTab(.ai, symbol: "sparkles", title: settings.text(.ai))
-                settingsTab(.archive, symbol: "archivebox", title: settings.text(.archive))
-                settingsAction(symbol: "rectangle.stack.fill", title: settings.text(.library)) {
-                    store.presentLibrary()
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .frame(height: 72)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        HStack(spacing: 0) {
+            settingsSidebar
 
-            Divider()
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                LinearGradient(
+                    colors: [
+                        Color(hex: NotePalette.gradients[0].startHex).opacity(0.08),
+                        Color.clear,
+                        Color(hex: NotePalette.gradients[1].endHex).opacity(0.055)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
 
-            Group {
-                switch selection {
-                case .general: generalSettings
-                case .deck: deckSettings
-                case .notes: noteSettings
-                case .ai: aiSettings
-                case .archive: archiveSettings
+                ScrollView {
+                    Group {
+                        switch selection {
+                        case .appearance: appearanceSettings
+                        case .ai: aiSettings
+                        case .archive: archiveSettings
+                        }
+                    }
+                    .padding(30)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(28)
         }
-        .frame(width: 680, height: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(width: 760, height: 560)
+        .onAppear { loadAIDraft(provider: settings.aiProvider) }
     }
 
-    private func settingsTab(_ section: Section, symbol: String, title: String) -> some View {
-        Button { selection = section } label: {
-            VStack(spacing: 5) {
-                Image(systemName: symbol).font(.system(size: 16))
-                Text(title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-            }
-            .foregroundStyle(selection == section ? Color.accentColor : Color.secondary)
-            .frame(width: 82, height: 54)
-            .background(selection == section ? Color.accentColor.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-        .dockNotesChromeButton()
-        .accessibilityLabel(title)
-    }
-
-    private func settingsAction(symbol: String, title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 5) {
-                Image(systemName: symbol).font(.system(size: 16))
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-            .foregroundStyle(Color.secondary)
-            .frame(width: 82, height: 54)
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-        .dockNotesChromeButton()
-        .accessibilityLabel(title)
-    }
-
-    private var generalSettings: some View {
-        settingsPage(title: settings.text(.general), subtitle: settings.text(.generalHint)) {
-            formRow(title: settings.text(.language)) {
-                Picker("", selection: $settings.language) {
-                    Text(settings.text(.systemDefault)).tag(AppLanguage.system)
-                    Text(settings.text(.simplifiedChinese)).tag(AppLanguage.simplifiedChinese)
-                    Text(settings.text(.english)).tag(AppLanguage.english)
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(NotePalette.gradients[0].swiftUIGradient)
+                    Image(systemName: "note.text")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.black.opacity(0.64))
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 330)
-            }
-            Text(settings.text(.languageHint))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 150)
-        }
-    }
+                .frame(width: 34, height: 34)
 
-    private var deckSettings: some View {
-        settingsPage(title: settings.text(.deck), subtitle: settings.text(.deckHint)) {
-            formRow(title: settings.text(.deckBehavior)) {
-                Toggle(settings.text(.keepDeckOpen), isOn: $settings.keepDeckOpen)
-                    .toggleStyle(.checkbox)
-                    .fixedSize()
-            }
-            formRow(title: settings.text(.visibleTabs)) {
-                Stepper(value: $settings.visibleTabCount, in: 1...7) {
-                    Text("\(settings.visibleTabCount)")
-                        .font(.system(size: 13).monospacedDigit())
-                        .frame(width: 20, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("DockNotes")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                    Text(settings.text(.preferences))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                 }
-                .fixedSize()
             }
-            formRow(title: settings.text(.deckPosition)) {
-                Picker("", selection: $settings.deckEdge) {
-                    Text(settings.text(.leftEdge)).tag(DeckEdge.left)
-                    Text(settings.text(.rightEdge)).tag(DeckEdge.right)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 240)
-            }
-            opacityRow(settings.text(.expanded), value: $settings.expandedOpacity)
-            opacityRow(settings.text(.collapsed), value: $settings.collapsedOpacity)
-            Text(settings.text(.opacityHint))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 150)
-        }
-    }
+            .padding(.horizontal, 18)
+            .padding(.top, 22)
+            .padding(.bottom, 24)
 
-    private var noteSettings: some View {
-        settingsPage(title: settings.text(.notes), subtitle: settings.text(.notesHint)) {
-            HStack(spacing: 14) {
-                Image(systemName: "paintpalette")
-                    .font(.system(size: 18))
+            VStack(spacing: 9) {
+                sidebarButton(
+                    .appearance,
+                    symbol: "slider.horizontal.3",
+                    title: settings.text(.appearance),
+                    gradient: NotePalette.gradients[0].swiftUIGradient
+                )
+                sidebarButton(
+                    .ai,
+                    symbol: "sparkles",
+                    title: settings.text(.ai),
+                    gradient: NotePalette.gradients[4].swiftUIGradient
+                )
+                sidebarButton(
+                    .archive,
+                    symbol: "archivebox",
+                    title: settings.text(.archiveSettings),
+                    gradient: NotePalette.gradients[1].swiftUIGradient
+                )
+            }
+            .padding(.horizontal, 12)
+
+            Spacer()
+
+            Button {
+                store.presentLibrary()
+            } label: {
+                Label(settings.text(.library), systemImage: "rectangle.stack.fill")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 32)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(settings.text(.customColor)).font(.system(size: 13, weight: .medium))
-                    Text(settings.text(.noteAppearanceHint)).font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .frame(height: 38)
+                    .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 10))
             }
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+            .dockNotesChromeButton()
+            .padding(12)
+        }
+        .frame(width: 188)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .trailing) { Divider() }
+    }
+
+    private func sidebarButton(
+        _ section: Section,
+        symbol: String,
+        title: String,
+        gradient: LinearGradient
+    ) -> some View {
+        Button { selection = section } label: {
+            HStack(spacing: 11) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 20)
+                Text(title)
+                    .font(.system(size: 12, weight: selection == section ? .bold : .medium))
+                    .lineLimit(1)
+                Spacer()
+                if selection == section {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .opacity(0.46)
+                }
+            }
+            .foregroundStyle(selection == section ? Color.black.opacity(0.72) : Color.secondary)
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .background {
+                if selection == section {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(gradient)
+                        .opacity(0.58)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.white.opacity(0.72), lineWidth: 0.7)
+                        }
+                        .shadow(color: Color.black.opacity(0.08), radius: 4, y: 2)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .dockNotesChromeButton()
+        .accessibilityLabel(title)
+    }
+
+    private var appearanceSettings: some View {
+        settingsPage(title: settings.text(.appearance), subtitle: settings.text(.appearanceSettingsHint)) {
+            settingsCard(title: settings.text(.general), symbol: "globe", gradient: NotePalette.gradients[0].swiftUIGradient) {
+                settingLine(title: settings.text(.language), detail: settings.text(.languageHint)) {
+                    Picker("", selection: $settings.language) {
+                        Text(settings.text(.systemDefault)).tag(AppLanguage.system)
+                        Text(settings.text(.simplifiedChinese)).tag(AppLanguage.simplifiedChinese)
+                        Text(settings.text(.english)).tag(AppLanguage.english)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 292)
+                }
+            }
+
+            settingsCard(title: settings.text(.deck), symbol: "rectangle.stack", gradient: NotePalette.gradients[4].swiftUIGradient) {
+                settingLine(title: settings.text(.deckPosition)) {
+                    Picker("", selection: $settings.deckEdge) {
+                        Text(settings.text(.leftEdge)).tag(DeckEdge.left)
+                        Text(settings.text(.rightEdge)).tag(DeckEdge.right)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 230)
+                }
+                settingLine(title: settings.text(.visibleTabs)) {
+                    Stepper(value: $settings.visibleTabCount, in: 1...7) {
+                        Text("\(settings.visibleTabCount)")
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .frame(width: 22)
+                    }
+                    .fixedSize()
+                }
+                settingLine(title: settings.text(.deckBehavior)) {
+                    Toggle(settings.text(.keepDeckOpen), isOn: $settings.keepDeckOpen)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                }
+                opacityLine(settings.text(.collapsed), value: $settings.collapsedOpacity)
+            }
+
+            settingsCard(title: settings.text(.notes), symbol: "note.text", gradient: NotePalette.gradients[2].swiftUIGradient) {
+                opacityLine(settings.text(.expanded), value: $settings.expandedOpacity)
+                HStack(spacing: 12) {
+                    Image(systemName: "paintpalette.fill")
+                        .foregroundStyle(Color.black.opacity(0.48))
+                        .frame(width: 28, height: 28)
+                        .background {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(NotePalette.gradients[2].swiftUIGradient)
+                                .opacity(0.55)
+                        }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(settings.text(.customColor)).font(.system(size: 12, weight: .semibold))
+                        Text(settings.text(.noteAppearanceHint)).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
         }
     }
 
     private var aiSettings: some View {
         settingsPage(title: settings.text(.ai), subtitle: settings.text(.aiSettingsHint)) {
-            formRow(title: settings.text(.aiProvider)) {
-                Picker("", selection: $settings.aiProvider) {
-                    Text(settings.text(.openAICompatible)).tag(AIProvider.openAICompatible)
-                    Text(settings.text(.anthropic)).tag(AIProvider.anthropic)
+            settingsCard(title: settings.text(.aiConnection), symbol: "network", gradient: NotePalette.gradients[4].swiftUIGradient) {
+                settingLine(title: settings.text(.aiProvider)) {
+                    Picker("", selection: $aiProviderDraft) {
+                        Text(settings.text(.openAICompatible)).tag(AIProvider.openAICompatible)
+                        Text(settings.text(.anthropic)).tag(AIProvider.anthropic)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 292)
+                    .onChange(of: aiProviderDraft) { _, provider in
+                        loadAIDraft(provider: provider)
+                    }
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 390)
+                settingLine(title: settings.text(.aiServiceURL)) {
+                    HStack(spacing: 8) {
+                        TextField(aiProviderDraft.defaultEndpoint, text: $aiEndpointDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11).monospaced())
+                            .padding(.horizontal, 10)
+                            .frame(height: 32)
+                            .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 0.6) }
+                        Button(settings.text(.restoreDefault)) { aiEndpointDraft = aiProviderDraft.defaultEndpoint }
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .frame(width: 330)
+                }
             }
-            formRow(title: settings.text(.aiServiceURL)) {
-                TextField(
-                    settings.aiProvider == .anthropic
-                        ? "https://api.anthropic.com/v1"
-                        : "https://api.openai.com/v1",
-                    text: $settings.aiEndpoint
-                )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 390)
+
+            settingsCard(title: settings.text(.recommendedModels), symbol: "cpu", gradient: NotePalette.gradients[0].swiftUIGradient) {
+                HStack(spacing: 8) {
+                    ForEach(aiProviderDraft.suggestedModels, id: \.self) { model in
+                        Button {
+                            aiModelDraft = model
+                        } label: {
+                            Text(model)
+                                .font(.system(size: 10, weight: aiModelDraft == model ? .bold : .medium).monospaced())
+                                .foregroundStyle(Color.black.opacity(0.70))
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background(
+                                    aiModelDraft == model
+                                        ? Color(hex: NotePalette.gradients[0].startHex).opacity(0.54)
+                                        : Color.white.opacity(0.52),
+                                    in: Capsule()
+                                )
+                                .overlay { Capsule().stroke(Color.white.opacity(0.72), lineWidth: 0.6) }
+                        }
+                        .dockNotesChromeButton()
+                    }
+                }
+                TextField(settings.text(.customModel), text: $aiModelDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12).monospaced())
+                    .padding(.horizontal, 11)
+                    .frame(height: 34)
+                    .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 0.6) }
             }
-            formRow(title: settings.text(.aiModel)) {
-                TextField(settings.aiProvider == .anthropic ? "claude-model-name" : "model-name", text: $settings.aiModel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 390)
+
+            settingsCard(title: settings.text(.aiAPIKey), symbol: "key.fill", gradient: NotePalette.gradients[1].swiftUIGradient) {
+                SecureField("sk-…", text: $aiAPIKeyDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12).monospaced())
+                    .padding(.horizontal, 11)
+                    .frame(height: 34)
+                    .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 0.6) }
+
+                HStack(spacing: 9) {
+                    Label(settings.text(.aiAPIKeyHint), systemImage: "lock.shield.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(settings.text(.saveConfiguration)) { saveAIConfiguration() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                }
+
+                if let aiSaveResult {
+                    Label(
+                        settings.text(aiSaveResult ? .configurationSaved : .configurationSaveFailed),
+                        systemImage: aiSaveResult ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                    )
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(aiSaveResult ? Color.green : Color.red)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
-            formRow(title: settings.text(.aiAPIKey)) {
-                SecureField("sk-…", text: $settings.aiAPIKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 390)
-            }
-            Text(settings.text(.aiAPIKeyHint))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 150)
         }
     }
 
     private var archiveSettings: some View {
         settingsPage(title: settings.text(.archiveSettings), subtitle: settings.text(.archiveSettingsHint)) {
-            formRow(title: settings.text(.obsidianBackup)) {
-                Toggle("", isOn: $settings.obsidianBackupEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-            formRow(title: settings.text(.obsidianFolder)) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
+            settingsCard(title: settings.text(.obsidianBackup), symbol: "externaldrive.fill", gradient: NotePalette.gradients[1].swiftUIGradient) {
+                settingLine(title: settings.text(.obsidianBackup)) {
+                    Toggle("", isOn: $settings.obsidianBackupEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                settingLine(title: settings.text(.obsidianFolder)) {
+                    VStack(alignment: .trailing, spacing: 8) {
                         Text(settings.obsidianVaultPath.isEmpty ? settings.text(.noFolderSelected) : settings.obsidianVaultPath)
                             .font(.system(size: 11))
                             .foregroundStyle(settings.obsidianVaultPath.isEmpty ? .secondary : .primary)
-                            .lineLimit(2)
+                            .lineLimit(1)
                             .truncationMode(.middle)
-                            .frame(width: 280, alignment: .leading)
+                            .frame(width: 292, alignment: .trailing)
                         Button(settings.text(.chooseFolder)) { chooseObsidianFolder() }
+                            .controlSize(.small)
                     }
-                    Text(settings.text(.obsidianBackupHint))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text(settings.text(.obsidianBackupHint))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                if let url = store.lastObsidianBackupURL {
+                    Label("\(settings.text(.lastBackup)): \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.green)
+                } else if let failure = store.lastObsidianBackupError {
+                    Label("\(settings.text(.backupFailed)): \(obsidianFailureText(failure))", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
                 }
             }
+        }
+    }
 
-            if let url = store.lastObsidianBackupURL {
-                Label("\(settings.text(.lastBackup)): \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.green)
-                    .padding(.leading, 150)
-            } else if let failure = store.lastObsidianBackupError {
-                Label("\(settings.text(.backupFailed)): \(obsidianFailureText(failure))", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-                    .padding(.leading, 150)
-            }
+    private func loadAIDraft(provider: AIProvider) {
+        aiProviderDraft = provider
+        aiEndpointDraft = settings.storedAIEndpoint(for: provider)
+        aiModelDraft = settings.storedAIModel(for: provider)
+        aiAPIKeyDraft = settings.storedAIAPIKey(for: provider)
+        aiSaveResult = nil
+    }
+
+    private func saveAIConfiguration() {
+        withAnimation(.easeOut(duration: 0.18)) {
+            aiSaveResult = settings.saveAIConfiguration(
+                provider: aiProviderDraft,
+                endpoint: aiEndpointDraft,
+                model: aiModelDraft,
+                apiKey: aiAPIKeyDraft
+            )
         }
     }
 
@@ -2525,30 +2797,82 @@ struct SettingsWindowView: View {
         }
     }
 
-    private func settingsPage<Content: View>(title _: String, subtitle _: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
+    private func settingsPage<Content: View>(title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 2)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsCard<Content: View>(
+        title: String,
+        symbol: String,
+        gradient: LinearGradient,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.58))
+                    .frame(width: 26, height: 26)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(gradient)
+                            .opacity(0.58)
+                    }
+                Text(title)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+            }
+            content()
+        }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color.white.opacity(0.36), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.72), lineWidth: 0.7)
+        }
+        .shadow(color: Color.black.opacity(0.055), radius: 7, y: 3)
+    }
+
+    private func settingLine<Content: View>(
+        title: String,
+        detail: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             content()
         }
     }
 
-    private func formRow<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .center, spacing: 18) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: 132, alignment: .leading)
-            content()
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func opacityRow(_ title: String, value: Binding<Double>) -> some View {
-        formRow(title: title) {
+    private func opacityLine(_ title: String, value: Binding<Double>) -> some View {
+        settingLine(title: title) {
             Slider(value: value, in: 0.20...1.0, step: 0.01)
-                .frame(width: 285)
+                .frame(width: 220)
             Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
-                .font(.system(size: 12).monospacedDigit())
+                .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .trailing)
+                .frame(width: 38, alignment: .trailing)
         }
     }
 }
