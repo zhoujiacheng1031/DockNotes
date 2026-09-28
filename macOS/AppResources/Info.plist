@@ -19,9 +19,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.0</string>
+    <string>0.9.0</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>8</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
 	<key>LSUIElement</key>
@@ -30,6 +30,10 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>DockNotes uses the microphone only when you start dictation for a note.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>DockNotes adds dated tasks to the calendar you choose and keeps only its own events in sync.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>DockNotes adds dated tasks to the calendar you choose and keeps only its own events in sync.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>DockNotes converts your speech to text inside the active note.</string>
 </dict>

@@ -1,17 +1,26 @@
 # DockNotes
 
+当前版本：v0.9。工作区把侧边标签按项目或场景分组，并保持任务、提醒和系统日历的全局汇总；旧数据会无损迁移到默认工作区。
+
+在“偏好设置 → 提醒与计划 → 系统日历”中授权后，可创建专用 `DockNotes` 日历或选择已有的可写日历，再开启同步。普通任务会生成一个 30 分钟事件，重复任务会投影当前实例与未来 7 天计划；若事件在系统日历中被修改或删除，DockNotes 会要求选择“重新同步”或“采用日历更改”，不会静默覆盖。
+
 DockNotes 是一款原生 macOS 桌面便签应用。便签可以收纳在屏幕左侧或右侧，以轻量的侧边标签形式随时访问，也可以展开为独立桌面便签。
 
 ## 当前功能
 
 - 屏幕边缘便签栏，支持左右停靠、贴边唤起，以及流畅、可连续使用的拖拽排序
+- 工作区标签组，支持即时切换、组内/跨组拖动、`⌥⌘1…9` 快捷切换、管理与安全删除撤销
 - 可见标签数量可设为 1–7 个，超出部分进入“更多便签”列表
 - 独立桌面便签、可靠置顶、日期、归档与便签库，支持归档和永久删除
+- 任务中心集中展示待处理、今天、未来 7 天、即将到期、已逾期和已完成事项
+- 重复任务支持每天、工作日、每周、每月及自定义间隔，可完成推进、跳过、单次改期或修改整个系列
+- 任务到期本地通知、每日任务摘要，以及通知内完成、稍后提醒和来源跳转
 - 提醒时间支持时钟选择，也支持手动输入 12 小时制或 24 小时制时间
+- Markdown/TXT 批量导入导出
 - 渐变色、RGB/Hex 自定义颜色、材质、字体和透明度
 - 有序列表、待办事项、搜索与听写
 - OpenAI 兼容接口与 Anthropic Messages API，提供模型预设、自定义模型和持久化配置
-- 与侧边标签视觉统一的精简设置页，集中管理外观、AI 和归档设置
+- 与侧边标签视觉统一的精简设置页，集中管理外观、提醒、AI 和归档设置
 - 应用内归档库，以及可选的 Obsidian Markdown/双向链接索引备份
 - 简体中文、English 和跟随系统语言
 - 本地持久化存储
@@ -20,7 +29,7 @@ DockNotes 是一款原生 macOS 桌面便签应用。便签可以收纳在屏幕
 
 ## 下载应用
 
-可从 [GitHub Releases](https://github.com/zhoujiacheng1031/DockNotes/releases/latest) 下载最新的 `DockNotes-macOS-v0.3.0.zip`，解压后将 `DockNotes.app` 移入“应用程序”文件夹。
+可从 [GitHub Releases](https://github.com/zhoujiacheng1031/DockNotes/releases/latest) 下载最新的 macOS 安装包，解压后将 `DockNotes.app` 移入“应用程序”文件夹。
 
 ## 目录
 
@@ -43,7 +52,8 @@ cd macOS
 
 ```bash
 cd macOS
-.build/debug/DockNotes --self-test
+./scripts/build-app.sh
+./build/DockNotes.app/Contents/MacOS/DockNotes --self-test
 ```
 
 ## 运行网页原型

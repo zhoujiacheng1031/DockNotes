@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private extension View {
     /// DockNotes draws its own selected/pressed state for compact chrome.
@@ -8,6 +9,189 @@ private extension View {
     func dockNotesChromeButton() -> some View {
         buttonStyle(.plain)
             .focusEffectDisabled()
+    }
+
+    /// The shared DockNotes glass language. On macOS 26 this is backed by the
+    /// system Liquid Glass renderer; older systems keep the same hierarchy
+    /// with a material, a cool inner wash, and a luminous edge.
+    @ViewBuilder
+    func dockNotesGlass<S: Shape>(
+        in shape: S,
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false,
+        fallbackOpacity: Double = 0.34
+    ) -> some View {
+        modifier(DockNotesGlassModifier(
+            shape: shape,
+            tint: tint,
+            interactive: interactive,
+            clear: clear,
+            fallbackOpacity: fallbackOpacity
+        ))
+    }
+
+    func dockNotesGlassPanel(
+        radius: CGFloat = 16,
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false,
+        fallbackOpacity: Double = 0.34
+    ) -> some View {
+        dockNotesGlass(
+            in: RoundedRectangle(cornerRadius: radius, style: .continuous),
+            tint: tint,
+            interactive: interactive,
+            clear: clear,
+            fallbackOpacity: fallbackOpacity
+        )
+    }
+
+    func dockNotesGlassCapsule(
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false,
+        fallbackOpacity: Double = 0.34
+    ) -> some View {
+        dockNotesGlass(
+            in: Capsule(style: .continuous),
+            tint: tint,
+            interactive: interactive,
+            clear: clear,
+            fallbackOpacity: fallbackOpacity
+        )
+    }
+}
+
+enum DockNotesGlassRenderingMode: Equatable {
+    case system
+    case stableMaterial
+}
+
+private struct DockNotesGlassRenderingModeKey: EnvironmentKey {
+    static let defaultValue: DockNotesGlassRenderingMode = .system
+}
+
+extension EnvironmentValues {
+    var dockNotesGlassRenderingMode: DockNotesGlassRenderingMode {
+        get { self[DockNotesGlassRenderingModeKey.self] }
+        set { self[DockNotesGlassRenderingModeKey.self] = newValue }
+    }
+}
+
+private struct DockNotesGlassModifier<S: Shape>: ViewModifier {
+    @Environment(\.dockNotesGlassRenderingMode) private var renderingMode
+
+    let shape: S
+    let tint: Color?
+    let interactive: Bool
+    let clear: Bool
+    let fallbackOpacity: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *),
+           renderingMode == .system,
+           !DockNotesGlassRuntime.isStaticRendering {
+            content.glassEffect(
+                (clear ? Glass.clear : Glass.regular)
+                    .tint(tint)
+                    .interactive(interactive),
+                in: shape
+            )
+        } else {
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .background((tint ?? Color.white).opacity(fallbackOpacity), in: shape)
+                .overlay {
+                    shape.stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.86), Color.white.opacity(0.28), Color.black.opacity(0.09)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
+                }
+        }
+    }
+}
+
+private enum DockNotesGlassMetrics {
+    static let panelRadius: CGFloat = 18
+    static let controlRadius: CGFloat = 10
+    static let softShadow = Color.black.opacity(0.12)
+    static let hairline = Color.white.opacity(0.68)
+}
+
+private enum DockNotesGlassRuntime {
+    /// SwiftUI's off-screen ImageRenderer does not composite the macOS 26
+    /// backdrop pass. Preview commands therefore use the faithful material
+    /// fallback while the running app continues to use native Liquid Glass.
+    static let isStaticRendering = CommandLine.arguments.contains {
+        $0.hasPrefix("--render-")
+    }
+}
+
+/// One glass base for a whole utility window. A soft palette wash sits above
+/// the system material, so the gradient colors stay visible without turning
+/// the page back into an opaque card.
+private struct DockNotesGlassCanvas: View {
+    let accent: Color
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .dockNotesGlass(
+                in: Rectangle(),
+                tint: accent.opacity(0.06),
+                fallbackOpacity: 0.26
+            )
+            .overlay {
+                LinearGradient(
+                    colors: [
+                        Color(hex: NotePalette.gradients[0].endHex).opacity(0.30),
+                        accent.opacity(0.20),
+                        Color(hex: NotePalette.gradients[2].endHex).opacity(0.19),
+                        Color(hex: NotePalette.gradients[1].endHex).opacity(0.24)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .allowsHitTesting(false)
+            }
+            .allowsHitTesting(false)
+    }
+}
+
+private struct DockNotesGlassWindowChrome: NSViewRepresentable {
+    var backgroundColor: NSColor = .clear
+
+    func makeNSView(context: Context) -> DockNotesGlassWindowChromeView {
+        let view = DockNotesGlassWindowChromeView(frame: .zero)
+        view.backgroundColor = backgroundColor
+        return view
+    }
+
+    func updateNSView(_ nsView: DockNotesGlassWindowChromeView, context: Context) {
+        nsView.backgroundColor = backgroundColor
+        nsView.configureWindow()
+    }
+}
+
+final class DockNotesGlassWindowChromeView: NSView {
+    var backgroundColor: NSColor = .clear
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configureWindow()
+    }
+
+    func configureWindow() {
+        window?.isOpaque = false
+        window?.backgroundColor = backgroundColor
+        window?.titlebarAppearsTransparent = true
+        window?.isMovableByWindowBackground = true
     }
 }
 
@@ -36,6 +220,95 @@ enum NoteSearchHighlighter {
             )
         }
         return ranges
+    }
+}
+
+struct UndoDeletionBanner: View {
+    @ObservedObject var store: NotesStore
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        if let pending = store.latestPendingDeletion {
+            HStack(spacing: 10) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(settings.text(.deletedNote)) “\(pending.note.title)”")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Button(settings.text(.undo)) {
+                    store.undoLatestDeletion(language: settings.language)
+                }
+                .font(.system(size: 12, weight: .bold))
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 14)
+            .frame(width: 340, height: 46)
+            .dockNotesGlassPanel(radius: 14, tint: Color.white.opacity(0.08))
+            .shadow(color: Color.black.opacity(0.18), radius: 14, y: 5)
+            .padding(8)
+            .accessibilityElement(children: .contain)
+        }
+    }
+}
+
+struct QuickCaptureView: View {
+    @ObservedObject var store: NotesStore
+    @ObservedObject var settings: AppSettings
+    @State private var title = ""
+    @State private var bodyDraft = ""
+    @FocusState private var bodyFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "bolt.fill")
+                    .foregroundStyle(Color.orange)
+                Text(settings.text(.quickCapture))
+                    .font(.system(size: 15, weight: .bold))
+                Spacer()
+                Text(settings.text(.quickCaptureHint))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            TextField(settings.text(.newNote), text: $title)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 11)
+                .frame(height: 34)
+                .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.08), interactive: true)
+            TextEditor(text: $bodyDraft)
+                .font(.system(size: 13))
+                .scrollContentBackground(.hidden)
+                .focused($bodyFocused)
+                .padding(8)
+                .dockNotesGlassPanel(radius: 12, tint: Color.white.opacity(0.08), interactive: true)
+            HStack {
+                Spacer()
+                Button(settings.text(.cancel)) { store.isQuickCapturePresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(settings.text(.save)) { save() }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && bodyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 420, height: 245)
+        .background(NotePalette.gradients[0].swiftUIGradient.opacity(0.28))
+        .dockNotesGlassPanel(radius: 20, tint: Color(hex: NotePalette.gradients[0].startHex).opacity(0.12))
+        .onAppear {
+            title = ""
+            bodyDraft = ""
+            DispatchQueue.main.async { bodyFocused = true }
+        }
+        .onExitCommand { store.isQuickCapturePresented = false }
+    }
+
+    private func save() {
+        _ = store.saveQuickCapture(title: title, body: bodyDraft, language: settings.language)
     }
 }
 
@@ -100,6 +373,65 @@ private struct DesktopWindowResizeGrip: NSViewRepresentable {
     func updateNSView(_ nsView: DesktopWindowResizeGripView, context: Context) {}
 }
 
+private struct DesktopWindowDragSurface: NSViewRepresentable {
+    var accessibilityIdentifier = "DockNotesDesktopDragHandle"
+
+    func makeNSView(context: Context) -> DesktopWindowDragView {
+        DesktopWindowDragView(accessibilityIdentifier: accessibilityIdentifier)
+    }
+
+    func updateNSView(_ nsView: DesktopWindowDragView, context: Context) {
+        nsView.setAccessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
+final class DesktopWindowDragView: NSView {
+    private var startingOrigin: NSPoint?
+    private var startingPointer: NSPoint?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    init(accessibilityIdentifier: String) {
+        super.init(frame: .zero)
+        setAccessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityIdentifier("DockNotesDesktopDragHandle")
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setAccessibilityIdentifier("DockNotesDesktopDragHandle")
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        startingOrigin = window.frame.origin
+        startingPointer = window.convertPoint(toScreen: event.locationInWindow)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, let startingOrigin, let startingPointer else { return }
+        let pointer = window.convertPoint(toScreen: event.locationInWindow)
+        window.setFrameOrigin(NSPoint(
+            x: startingOrigin.x + pointer.x - startingPointer.x,
+            y: startingOrigin.y + pointer.y - startingPointer.y
+        ))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        startingOrigin = nil
+        startingPointer = nil
+    }
+}
+
 private final class DesktopWindowResizeGripView: NSView {
     private var initialWindowFrame: NSRect?
     private var initialMouseLocation: NSPoint?
@@ -156,11 +488,19 @@ struct DeckWindowView: View {
     let availableHeight: CGFloat
     var isDesignPreview = false
     @State private var isOverflowPresented = false
+    @State private var isWorkspaceSwitcherPresented = false
+    @State private var isActionsPresented = false
+    @State private var workspaceCapsuleScreenFrame = CGRect.zero
+    @State private var workspaceDropFrames: [NoteWorkspace.ID: CGRect] = [:]
+    @State private var workspaceDropTargetID: NoteWorkspace.ID?
+    @State private var isWorkspaceDropSession = false
     @StateObject private var tabDrag = TabDragCoordinator()
+
+    private var deckNotes: [DockNote] { store.activeWorkspaceNotes }
 
     private var plan: DeckPlan {
         DeckLayout.plan(
-            notes: store.notes,
+            notes: deckNotes,
             activeNoteID: store.activeNoteID,
             isExpanded: store.isExpanded,
             availableHeight: availableHeight,
@@ -171,13 +511,13 @@ struct DeckWindowView: View {
 
     private var overflowNotes: [DockNote] {
         let ids = Set(plan.overflowIDs)
-        return store.notes.filter { ids.contains($0.id) }
+        return deckNotes.filter { ids.contains($0.id) }
     }
 
     private var positionedTabs: [PositionedTab] {
         plan.slots.enumerated().compactMap { slot, noteID in
             guard let noteID,
-                  let note = store.notes.first(where: { $0.id == noteID }) else { return nil }
+                  let note = deckNotes.first(where: { $0.id == noteID }) else { return nil }
             return PositionedTab(note: note, slot: slot)
         }
     }
@@ -188,8 +528,11 @@ struct DeckWindowView: View {
 
     private var deckContentHeight: CGFloat {
         let controlCount = overflowNotes.isEmpty ? 3 : 4
-        let controlsHeight = CGFloat(controlCount * 29 + max(0, controlCount - 1) * 7 + 10)
-        return DeckLayout.tabStackHeight(slotCount: plan.slots.count, pitch: tabPitch) + controlsHeight
+        let controlsHeight = DeckLayout.controlStackHeight(count: controlCount)
+        let tabAreaHeight = deckNotes.isEmpty
+            ? DeckLayout.emptyDeckHeight
+            : DeckLayout.deckStackHeight(noteSlotCount: plan.slots.count, pitch: tabPitch)
+        return tabAreaHeight + controlsHeight
     }
 
     var body: some View {
@@ -197,12 +540,24 @@ struct DeckWindowView: View {
             if store.deckState.showsTabs {
                 VStack(alignment: settings.deckEdge == .right ? .trailing : .leading, spacing: 0) {
                     ZStack(alignment: settings.deckEdge == .right ? .topTrailing : .topLeading) {
-                        ForEach(positionedTabs) { positionedTab in
+                        if deckNotes.isEmpty {
+                            NewNoteDeckCard(
+                                workspace: store.activeWorkspace,
+                                edge: settings.deckEdge,
+                                accessibilityLabel: settings.text(.newNote)
+                            ) {
+                                store.addNote(language: settings.language)
+                            }
+                        } else {
+                            ForEach(positionedTabs) { positionedTab in
                             let note = positionedTab.note
                             let slot = positionedTab.slot
+                            let isSelected = EdgeTabSelection.isSelected(
+                                noteID: note.id,
+                                activeNoteID: store.activeNoteID
+                            )
                             EdgeTab(
                                 note: note,
-                                isSelected: note.id == store.activeNoteID && !store.isExpanded,
                                 edge: settings.deckEdge,
                                 language: settings.language,
                                 tiltDegrees: DeckLayout.tiltDegrees(for: slot),
@@ -227,22 +582,36 @@ struct DeckWindowView: View {
                                             tabDrag.recoverInterruptedDrag(noteID: note.id)
                                             store.select(note.id)
                                         },
-                                        onDragChanged: { translation in
+                                        contextMenuTitle: settings.text(.moveToWorkspace),
+                                        contextMenuItems: store.workspaces.map { workspace in
+                                            TabPointerContextMenuItem(
+                                                id: workspace.id,
+                                                title: workspace.name,
+                                                isCurrent: workspace.id == note.workspaceID
+                                            )
+                                        },
+                                        onContextMenuItem: { workspaceID in
+                                            store.moveNote(note.id, toWorkspace: workspaceID)
+                                        },
+                                        onDragChanged: { translation, screenPoint in
                                             updateTabDrag(
                                                 noteID: note.id,
                                                 sourceSlot: slot,
-                                                translation: translation
+                                                translation: translation,
+                                                screenPoint: screenPoint
                                             )
                                         },
-                                        onDragEnded: { translation in
+                                        onDragEnded: { translation, screenPoint in
                                             finishTabDrag(
                                                 noteID: note.id,
                                                 sourceSlot: slot,
-                                                translation: translation
+                                                translation: translation,
+                                                screenPoint: screenPoint
                                             )
                                         },
                                         onDragCancelled: {
                                             tabDrag.recoverInterruptedDrag(noteID: note.id)
+                                            resetWorkspaceDrop()
                                         }
                                     )
                                     .frame(
@@ -252,7 +621,7 @@ struct DeckWindowView: View {
                                 }
                             }
                             .accessibilityLabel(note.title)
-                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
                             .modifier(
                                 TabDragVisualModifier(
                                     noteID: note.id,
@@ -263,15 +632,27 @@ struct DeckWindowView: View {
                             )
                             .offset(y: CGFloat(slot) * tabPitch)
                             .zIndex(tabDrag.noteID == note.id ? 100 : Double(slot))
+                            }
+                            NewNoteDeckCard(
+                                workspace: store.activeWorkspace,
+                                edge: settings.deckEdge,
+                                accessibilityLabel: settings.text(.newNote)
+                            ) {
+                                store.addNote(language: settings.language)
+                            }
+                            .offset(y: CGFloat(plan.slots.count) * tabPitch)
+                            .zIndex(Double(plan.slots.count))
                         }
                     }
                     .frame(
                         width: DeckLayout.windowWidth,
-                        height: DeckLayout.tabStackHeight(slotCount: plan.slots.count, pitch: tabPitch),
+                        height: deckNotes.isEmpty
+                            ? DeckLayout.emptyDeckHeight
+                            : DeckLayout.deckStackHeight(noteSlotCount: plan.slots.count, pitch: tabPitch),
                         alignment: .topTrailing
                     )
 
-                    VStack(spacing: 7) {
+                    VStack(spacing: DeckLayout.controlSpacing) {
                         if !overflowNotes.isEmpty {
                             Button {
                                 isOverflowPresented.toggle()
@@ -279,9 +660,11 @@ struct DeckWindowView: View {
                                 Text("+\(overflowNotes.count)")
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundStyle(Color.black.opacity(0.58))
-                                    .frame(width: 29, height: 29)
-                                    .background(Color.white.opacity(0.88), in: Circle())
-                                    .overlay(Circle().stroke(Color.black.opacity(0.06), lineWidth: 0.6))
+                                    .frame(
+                                        width: DeckLayout.controlButtonHeight,
+                                        height: DeckLayout.controlButtonHeight
+                                    )
+                                    .dockNotesGlass(in: Circle(), tint: Color.white.opacity(0.08), interactive: true)
                             }
                             .dockNotesChromeButton()
                             .help(settings.text(.moreNotes))
@@ -294,18 +677,64 @@ struct DeckWindowView: View {
                                 }
                             }
                         }
-                        deckButton("plus", label: settings.text(.newNote)) {
-                            store.addNote(language: settings.language)
+                        Button {
+                            isWorkspaceSwitcherPresented.toggle()
+                        } label: {
+                            WorkspaceCapsule(workspace: store.activeWorkspace)
+                                .background {
+                                    if !isDesignPreview {
+                                        ScreenFrameReader { frame in
+                                            workspaceCapsuleScreenFrame = frame
+                                        }
+                                    }
+                                }
+                        }
+                        .dockNotesChromeButton()
+                        .help(settings.text(.workspaces))
+                        .accessibilityLabel(settings.text(.workspaces))
+                        .popover(
+                            isPresented: $isWorkspaceSwitcherPresented,
+                            arrowEdge: settings.deckEdge == .right ? .trailing : .leading
+                        ) {
+                            WorkspaceSwitcherView(
+                                store: store,
+                                settings: settings,
+                                draggedNoteID: isWorkspaceDropSession ? tabDrag.noteID : nil,
+                                dropTargetID: workspaceDropTargetID,
+                                reportDropFrame: { id, frame in
+                                    workspaceDropFrames[id] = frame
+                                }
+                            ) {
+                                isWorkspaceSwitcherPresented = false
+                            }
                         }
                         deckButton("rectangle.stack.fill", label: settings.text(.library)) {
                             store.presentLibrary()
                         }
-                        deckButton("gearshape", label: settings.text(.preferences)) {
-                            store.presentSettings()
+                        deckButton("ellipsis", label: settings.text(.moreActions)) {
+                            isActionsPresented.toggle()
+                        }
+                        .popover(
+                            isPresented: $isActionsPresented,
+                            arrowEdge: settings.deckEdge == .right ? .trailing : .leading
+                        ) {
+                            VStack(spacing: 4) {
+                                deckActionRow("checklist", label: settings.text(.taskCenter)) {
+                                    isActionsPresented = false
+                                    store.presentTaskCenter()
+                                }
+                                deckActionRow("gearshape", label: settings.text(.preferences)) {
+                                    isActionsPresented = false
+                                    store.presentSettings()
+                                }
+                            }
+                            .padding(8)
+                            .frame(width: 210)
+                            .dockNotesGlassPanel(radius: 14, tint: Color.white.opacity(0.07))
                         }
                     }
                     .frame(width: DeckLayout.windowWidth)
-                    .padding(.top, 10)
+                    .padding(.top, DeckLayout.controlTopPadding)
                 }
                 .frame(width: DeckLayout.windowWidth, height: deckContentHeight, alignment: .top)
                 .transition(
@@ -316,7 +745,7 @@ struct DeckWindowView: View {
             } else {
                 ZStack(alignment: settings.deckEdge == .right ? .trailing : .leading) {
                     RestingDeckIndicator(
-                        notes: store.notes,
+                        notes: deckNotes,
                         availableHeight: availableHeight,
                         edge: settings.deckEdge
                     )
@@ -337,12 +766,14 @@ struct DeckWindowView: View {
         .background(Color.clear)
         .contentShape(Rectangle())
         .background {
-            DeckPointerBoundary { hovering in
-                guard store.deckState != .resting else { return }
-                if hovering {
-                    store.pointerEnteredDeck()
-                } else {
-                    store.pointerExitedDeck(keepOpen: settings.keepDeckOpen)
+            if !isDesignPreview {
+                DeckPointerBoundary { hovering in
+                    guard store.deckState != .resting else { return }
+                    if hovering {
+                        store.pointerEnteredDeck()
+                    } else {
+                        store.pointerExitedDeck(keepOpen: settings.keepDeckOpen)
+                    }
                 }
             }
         }
@@ -352,7 +783,8 @@ struct DeckWindowView: View {
     private func updateTabDrag(
         noteID: DockNote.ID,
         sourceSlot: Int,
-        translation: CGFloat
+        translation: CGFloat,
+        screenPoint: CGPoint
     ) {
         tabDrag.begin(noteID: noteID, sourceSlot: sourceSlot)
         let target = DeckLayout.dragTarget(
@@ -362,14 +794,26 @@ struct DeckWindowView: View {
             pitch: tabPitch
         )
         tabDrag.update(translation: translation, targetSlot: target, noteID: noteID)
+        updateWorkspaceDropTarget(at: screenPoint)
     }
 
     private func finishTabDrag(
         noteID: DockNote.ID,
         sourceSlot: Int,
-        translation: CGFloat
+        translation: CGFloat,
+        screenPoint: CGPoint
     ) {
         tabDrag.begin(noteID: noteID, sourceSlot: sourceSlot)
+        updateWorkspaceDropTarget(at: screenPoint)
+        if isWorkspaceDropSession {
+            if let workspaceDropTargetID,
+               workspaceDropTargetID != store.activeWorkspaceID {
+                store.moveNote(noteID, toWorkspace: workspaceDropTargetID)
+            }
+            tabDrag.recoverInterruptedDrag(noteID: noteID)
+            resetWorkspaceDrop()
+            return
+        }
         let destination = DeckLayout.dragTarget(
             sourceSlot: tabDrag.sourceSlot,
             translation: translation,
@@ -385,23 +829,367 @@ struct DeckWindowView: View {
                 pitch: tabPitch,
                 noteID: noteID
             )
-            store.moveNote(noteID, to: destination)
+            store.moveNote(noteID, toWorkspace: store.activeWorkspaceID, at: destination)
         }
         tabDrag.completeSettling(noteID: noteID)
     }
 
+    private func updateWorkspaceDropTarget(at screenPoint: CGPoint) {
+        if WorkspaceDropRouting.enteredCapsule(
+            at: screenPoint,
+            capsuleFrame: workspaceCapsuleScreenFrame
+        ) {
+            isWorkspaceDropSession = true
+            if !isWorkspaceSwitcherPresented { isWorkspaceSwitcherPresented = true }
+        }
+        guard isWorkspaceDropSession else { return }
+        workspaceDropTargetID = WorkspaceDropRouting.targetWorkspace(
+            at: screenPoint,
+            currentWorkspaceID: store.activeWorkspaceID,
+            frames: workspaceDropFrames
+        )
+    }
+
+    private func resetWorkspaceDrop() {
+        isWorkspaceDropSession = false
+        workspaceDropTargetID = nil
+        workspaceDropFrames.removeAll()
+        isWorkspaceSwitcherPresented = false
+    }
+
     private func deckButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.black.opacity(0.58))
-                .frame(width: 29, height: 29)
-                .background(Color.white.opacity(0.88), in: Circle())
-                .overlay(Circle().stroke(Color.black.opacity(0.06), lineWidth: 0.6))
+            deckControlLabel(symbol)
         }
         .dockNotesChromeButton()
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    private func deckControlLabel(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(Color.black.opacity(0.58))
+            .frame(
+                width: DeckLayout.controlButtonHeight,
+                height: DeckLayout.controlButtonHeight
+            )
+            .dockNotesGlass(in: Circle(), tint: Color.white.opacity(0.08), interactive: true)
+    }
+
+    private func deckActionRow(
+        _ symbol: String,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18)
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(Color.primary.opacity(0.78))
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.04), interactive: true)
+            .contentShape(Rectangle())
+        }
+        .dockNotesChromeButton()
+    }
+}
+
+enum WorkspaceDropRouting {
+    static func enteredCapsule(at point: CGPoint, capsuleFrame: CGRect) -> Bool {
+        !capsuleFrame.isEmpty && capsuleFrame.insetBy(dx: -8, dy: -8).contains(point)
+    }
+
+    static func targetWorkspace(
+        at point: CGPoint,
+        currentWorkspaceID: NoteWorkspace.ID,
+        frames: [NoteWorkspace.ID: CGRect]
+    ) -> NoteWorkspace.ID? {
+        frames.first(where: { id, frame in
+            id != currentWorkspaceID && frame.insetBy(dx: -3, dy: -2).contains(point)
+        })?.key
+    }
+}
+
+private struct WorkspaceCapsule: View {
+    let workspace: NoteWorkspace
+
+    private var abbreviation: String {
+        let compact = workspace.name.filter { !$0.isWhitespace }
+        return String(compact.prefix(2))
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(hex: workspace.colorHex).opacity(0.78), Color.white.opacity(0.88)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.78), lineWidth: 0.7)
+            Text(abbreviation)
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.black.opacity(0.62))
+                .lineLimit(1)
+        }
+        .frame(width: 38, height: DeckLayout.controlButtonHeight)
+        .dockNotesGlassPanel(radius: 10, tint: Color(hex: workspace.colorHex).opacity(0.12), interactive: true)
+        .shadow(color: Color.black.opacity(0.10), radius: 3, x: 0, y: 2)
+    }
+}
+
+private struct NewNoteDeckCard: View {
+    let workspace: NoteWorkspace
+    let edge: DeckEdge
+    let accessibilityLabel: String
+    let createNote: () -> Void
+
+    var body: some View {
+        Button(action: createNote) {
+            ZStack {
+                LinearGradient(
+                    colors: [Color(hex: workspace.colorHex).opacity(0.34), Color.white.opacity(0.18)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Color.black.opacity(0.42))
+            }
+            .frame(width: DeckLayout.tabWidth, height: DeckLayout.newNoteCardHeight)
+            .background {
+                TuckyTabShape(edge: edge)
+                    .fill(Color.clear)
+                    .dockNotesGlass(
+                        in: TuckyTabShape(edge: edge),
+                        tint: Color(hex: workspace.colorHex).opacity(0.10),
+                        interactive: true,
+                        fallbackOpacity: 0.18
+                    )
+            }
+            .clipShape(TuckyTabShape(edge: edge))
+            .shadow(color: Color.black.opacity(0.07), radius: 3, x: edge == .right ? -2 : 2, y: 2)
+        }
+        .dockNotesChromeButton()
+        .frame(width: DeckLayout.windowWidth, height: 132, alignment: edge == .right ? .trailing : .leading)
+        .help(accessibilityLabel)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+struct WorkspaceSwitcherView: View {
+    @ObservedObject var store: NotesStore
+    @ObservedObject var settings: AppSettings
+    let draggedNoteID: DockNote.ID?
+    let dropTargetID: NoteWorkspace.ID?
+    let reportDropFrame: (NoteWorkspace.ID, CGRect) -> Void
+    let dismiss: () -> Void
+    var reportsDropFrames = true
+    @State private var editingWorkspaceID: NoteWorkspace.ID?
+    @State private var workspaceNameDraft = ""
+    @FocusState private var focusedWorkspaceID: NoteWorkspace.ID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(settings.text(.workspaces))
+                    .font(.system(size: 13, weight: .bold))
+                Spacer()
+                Text("\(store.workspaces.count)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            Divider()
+            ScrollView {
+                VStack(spacing: 3) {
+                    ForEach(Array(store.workspaces.enumerated()), id: \.element.id) { index, workspace in
+                        HStack(spacing: 4) {
+                            if editingWorkspaceID == workspace.id {
+                                Circle()
+                                    .fill(Color(hex: workspace.colorHex))
+                                    .frame(width: 11, height: 11)
+                                TextField(settings.text(.workspaceName), text: $workspaceNameDraft)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .focused($focusedWorkspaceID, equals: workspace.id)
+                                    .onSubmit { commitWorkspaceRename(workspace.id) }
+                                Spacer()
+                                Button {
+                                    commitWorkspaceRename(workspace.id)
+                                } label: {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .frame(width: 22, height: 26)
+                                }
+                                .dockNotesChromeButton()
+                                .disabled(workspaceNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                .help(settings.text(.save))
+                                Button {
+                                    cancelWorkspaceRename()
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .frame(width: 22, height: 26)
+                                }
+                                .dockNotesChromeButton()
+                                .help(settings.text(.cancel))
+                            } else {
+                                Button {
+                                    store.switchWorkspace(to: workspace.id)
+                                    dismiss()
+                                } label: {
+                                    HStack(spacing: 9) {
+                                        Circle()
+                                            .fill(Color(hex: workspace.colorHex))
+                                            .frame(width: 11, height: 11)
+                                        Text(workspace.name)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text("\(store.notes.filter { $0.workspaceID == workspace.id }.count)")
+                                            .font(.system(size: 10).monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                        if workspace.id == store.activeWorkspaceID {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                        } else if index < 9 {
+                                            Text("⌥⌘\(index + 1)")
+                                                .font(.system(size: 9))
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .dockNotesChromeButton()
+                                .disabled(draggedNoteID != nil && workspace.id == store.activeWorkspaceID)
+
+                                if draggedNoteID == nil {
+                                    Button {
+                                        beginWorkspaceRename(workspace)
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .frame(width: 22, height: 26)
+                                    }
+                                    .dockNotesChromeButton()
+                                    .help(settings.text(.renameWorkspace))
+                                    .accessibilityLabel(settings.text(.renameWorkspace))
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 34)
+                        .background(
+                            workspace.id == dropTargetID
+                                ? Color(hex: workspace.colorHex).opacity(0.20)
+                                : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .dockNotesGlassPanel(
+                            radius: 9,
+                            tint: workspace.id == store.activeWorkspaceID
+                                ? Color(hex: workspace.colorHex).opacity(0.10)
+                                : Color.white.opacity(0.025),
+                            interactive: true,
+                            fallbackOpacity: 0.12
+                        )
+                        .background {
+                            if reportsDropFrames {
+                                ScreenFrameReader { frame in
+                                    reportDropFrame(workspace.id, frame)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(5)
+            }
+            Divider()
+            HStack(spacing: 4) {
+                Button {
+                    let baseName = settings.language == .english ? "Workspace" : "工作区"
+                    _ = store.createWorkspace(name: "\(baseName) \(store.workspaces.count + 1)")
+                    dismiss()
+                } label: {
+                    Label(settings.text(.newWorkspace), systemImage: "plus")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button {
+                    dismiss()
+                    DispatchQueue.main.async { store.presentWorkspaceManagement() }
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .frame(width: 24)
+                }
+                .help(settings.text(.manageWorkspaces))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .dockNotesChromeButton()
+        }
+        .frame(width: 248, height: min(CGFloat(store.workspaces.count * 37 + 92), 360))
+        .dockNotesGlassPanel(radius: 16, tint: Color.white.opacity(0.08))
+    }
+
+    private func beginWorkspaceRename(_ workspace: NoteWorkspace) {
+        editingWorkspaceID = workspace.id
+        workspaceNameDraft = workspace.name
+        DispatchQueue.main.async { focusedWorkspaceID = workspace.id }
+    }
+
+    private func commitWorkspaceRename(_ workspaceID: NoteWorkspace.ID) {
+        guard store.renameWorkspace(workspaceID, to: workspaceNameDraft) else { return }
+        editingWorkspaceID = nil
+        workspaceNameDraft = ""
+        focusedWorkspaceID = nil
+    }
+
+    private func cancelWorkspaceRename() {
+        editingWorkspaceID = nil
+        workspaceNameDraft = ""
+        focusedWorkspaceID = nil
+    }
+}
+
+private struct ScreenFrameReader: NSViewRepresentable {
+    let onChange: (CGRect) -> Void
+
+    func makeNSView(context: Context) -> ScreenFrameReportingView {
+        let view = ScreenFrameReportingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ nsView: ScreenFrameReportingView, context: Context) {
+        nsView.onChange = onChange
+        nsView.reportFrame()
+    }
+}
+
+private final class ScreenFrameReportingView: NSView {
+    var onChange: (CGRect) -> Void = { _ in }
+
+    override func layout() {
+        super.layout()
+        reportFrame()
+    }
+
+    func reportFrame() {
+        guard let window else { return }
+        let windowRect = convert(bounds, to: nil)
+        let screenRect = window.convertToScreen(windowRect)
+        DispatchQueue.main.async { [weak self] in self?.onChange(screenRect) }
     }
 }
 
@@ -581,19 +1369,7 @@ private struct RestingDeckIndicator: View {
         }
         .padding(.vertical, 9)
         .padding(.horizontal, 6)
-        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
-        .background(Color.white.opacity(0.52), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.92), Color.black.opacity(0.09)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.7
-                )
-        }
+        .dockNotesGlassCapsule(tint: Color.white.opacity(0.07))
         .shadow(color: Color.black.opacity(0.14), radius: 7, x: edge == .right ? -2 : 2, y: 2)
         .frame(width: 26, height: availableHeight, alignment: .center)
         .frame(maxWidth: .infinity, alignment: edge == .right ? .trailing : .leading)
@@ -647,12 +1423,18 @@ private struct OverflowNotesView: View {
             }
         }
         .frame(width: 240, height: min(CGFloat(notes.count * 36 + 48), 320))
+        .dockNotesGlassPanel(radius: 16, tint: Color.white.opacity(0.08))
+    }
+}
+
+enum EdgeTabSelection {
+    static func isSelected(noteID: DockNote.ID, activeNoteID: DockNote.ID?) -> Bool {
+        noteID == activeNoteID
     }
 }
 
 private struct EdgeTab: View {
     let note: DockNote
-    let isSelected: Bool
     let edge: DeckEdge
     let language: AppLanguage
     let tiltDegrees: Double
@@ -663,10 +1445,9 @@ private struct EdgeTab: View {
     var body: some View {
         HStack(spacing: 0) {
             ZStack {
-                note.gradient
-                Color.white.opacity(0.13)
+                note.gradient.opacity(0.18)
                 LinearGradient(
-                    colors: [Color.white.opacity(0.48), Color.white.opacity(0.20), Color.white.opacity(0.06)],
+                    colors: [Color.white.opacity(0.31), Color.white.opacity(0.09), Color.clear],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
@@ -713,48 +1494,32 @@ private struct EdgeTab: View {
                 )
 
                 Rectangle()
-                    .stroke(
-                        Color.white.opacity(0.78),
-                        style: StrokeStyle(lineWidth: 0.8, dash: [2.2, 3.2])
-                    )
-                    .frame(width: 0.8, height: DeckLayout.tabVisualHeight - 18)
+                    .fill(Color.white.opacity(0.42))
+                    .frame(width: 0.6, height: DeckLayout.tabVisualHeight - 18)
                     .frame(maxWidth: .infinity, alignment: edge == .right ? .trailing : .leading)
                     .padding(edge == .right ? .trailing : .leading, 4)
 
-                if isSelected {
-                    Capsule()
-                        .fill(Color.white.opacity(0.88))
-                        .frame(width: 2.5, height: 58)
-                        .shadow(color: Color.white.opacity(0.65), radius: 3)
-                        .frame(maxWidth: .infinity, alignment: edge == .right ? .leading : .trailing)
-                        .padding(edge == .right ? .leading : .trailing, 3)
-                }
             }
             .frame(width: DeckLayout.tabWidth, height: DeckLayout.tabVisualHeight - 4)
+            .dockNotesGlass(
+                in: TuckyTabShape(edge: edge),
+                tint: Color(hex: note.colorHex).opacity(0.20),
+                interactive: true,
+                fallbackOpacity: 0.13
+            )
             .clipShape(TuckyTabShape(edge: edge))
             .contentShape(TuckyTabShape(edge: edge))
-            .overlay {
-                TuckyTabShape(edge: edge)
-                    .stroke(Color.white.opacity(0.68), lineWidth: 0.8)
-            }
-            .overlay {
-                TuckyTabShape(edge: edge)
-                    .stroke(Color.black.opacity(0.055), lineWidth: 0.45)
-                    .padding(0.8)
-            }
             .rotationEffect(
-                .degrees(isDragging ? 0 : (edge == .right ? tiltDegrees : -tiltDegrees)),
+                .degrees(isDragging ? 0 : (edge == .right ? tiltDegrees : -tiltDegrees) * 0.25),
                 anchor: edge == .right ? .trailing : .leading
             )
-            .offset(x: isSelected ? (edge == .right ? -5 : 5) : 0)
-            .saturation(isSelected ? 1.10 : 0.96)
+            .saturation(0.98)
             .shadow(
-                color: Color.black.opacity(isDragging ? 0.20 : 0.15),
-                radius: isDragging ? 8 : 5,
-                x: edge == .right ? -3 : 3,
-                y: 3
+                color: Color.black.opacity(isDragging ? 0.14 : 0.06),
+                radius: isDragging ? 7 : 3,
+                x: edge == .right ? -2 : 2,
+                y: 2
             )
-            .animation(.easeOut(duration: 0.15), value: isSelected)
             .animation(.easeOut(duration: 0.12), value: isDragging)
         }
         .frame(
@@ -836,16 +1601,10 @@ struct EdgeTabHoverCard: View {
         .padding(12)
         .frame(width: 236, alignment: .leading)
         .background {
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                note.gradient.opacity(0.11)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            note.gradient.opacity(0.10)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 0.7)
-        }
+        .dockNotesGlassPanel(radius: 14, tint: Color(hex: note.colorHex).opacity(0.08))
         .padding(4)
     }
 }
@@ -893,6 +1652,8 @@ struct NoteCard: View {
     @State private var customHighlightColor = Color(hex: NoteHighlightPalette.defaultHex)
     @State private var searchQuery = ""
     @State private var formatRequest: NoteFormatRequest?
+    @State private var taskInsertRequest: UUID?
+    private let isDesignPreview: Bool
 
     private let palette = NotePalette.gradients
 
@@ -901,12 +1662,14 @@ struct NoteCard: View {
         store: NotesStore,
         settings: AppSettings,
         closeAction: (() -> Void)? = nil,
-        startsInAIMode: Bool = false
+        startsInAIMode: Bool = false,
+        isDesignPreview: Bool = false
     ) {
         self.note = note
         self.store = store
         self.settings = settings
         self.closeAction = closeAction
+        self.isDesignPreview = isDesignPreview
         _isAIAssistantPresented = State(initialValue: startsInAIMode)
     }
 
@@ -918,6 +1681,13 @@ struct NoteCard: View {
         ZStack(alignment: .topTrailing) {
             HStack(spacing: 0) {
                 NoteSpine(note: note)
+                    .overlay {
+                        if store.desktopNoteIDs.contains(note.id) && !isDesignPreview {
+                            DesktopWindowDragSurface(accessibilityIdentifier: "DockNotesDesktopDragRegion")
+                                .help(settings.text(.moveDesktopNote))
+                                .accessibilityLabel(settings.text(.moveDesktopNote))
+                        }
+                    }
                 VStack(spacing: 0) {
                     toolbar
                     Divider().opacity(0.13)
@@ -944,6 +1714,7 @@ struct NoteCard: View {
                             note: note,
                             store: store,
                             settings: settings,
+                            isDesignPreview: isDesignPreview,
                             closeAction: { isAIAssistantPresented = false }
                         )
                         .frame(height: 150)
@@ -952,12 +1723,29 @@ struct NoteCard: View {
                     footer
                 }
             }
-            .background(NoteSurface(note: note))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.black.opacity(0.075), lineWidth: 0.65)
+            .background {
+                RoundedRectangle(cornerRadius: DockNotesGlassMetrics.panelRadius, style: .continuous)
+                    .fill(Color.clear)
+                    .dockNotesGlassPanel(
+                        radius: DockNotesGlassMetrics.panelRadius,
+                        tint: Color(hex: note.colorHex).opacity(0.10),
+                        fallbackOpacity: 0.24
+                    )
+                    .overlay {
+                        NoteSurface(note: note)
+                            .opacity(0.40)
+                            .clipShape(RoundedRectangle(cornerRadius: DockNotesGlassMetrics.panelRadius, style: .continuous))
+                            .allowsHitTesting(false)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: DockNotesGlassMetrics.panelRadius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.72), lineWidth: 0.8)
+                            .allowsHitTesting(false)
+                    }
             }
+            .clipShape(RoundedRectangle(cornerRadius: DockNotesGlassMetrics.panelRadius, style: .continuous))
+            .shadow(color: Color(hex: note.colorHex).opacity(0.16), radius: 20, x: 0, y: 9)
+            .shadow(color: Color.black.opacity(0.10), radius: 12, x: 0, y: 6)
         }
         // The caller owns the card's dimensions. The edge editor proposes its
         // fixed 460 x 380 size, while a detached desktop window can grow well
@@ -970,15 +1758,28 @@ struct NoteCard: View {
         let deadline = note.dueDate.map {
             DeadlinePresentation.make(for: $0, language: settings.language)
         }
+        let isDesktopNote = store.desktopNoteIDs.contains(note.id)
         return VStack(spacing: 0) {
             HStack(spacing: 7) {
-            let isDesktopNote = store.desktopNoteIDs.contains(note.id)
             tinyButton(
                 isDesktopNote ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                 label: settings.text(isDesktopNote ? .returnToEdge : .openOnDesktop),
                 isActive: isDesktopNote
             ) {
                 store.presentOnDesktop(note.id)
+            }
+
+            if isDesktopNote && !isDesignPreview {
+                DesktopWindowDragSurface()
+                    .frame(width: 28, height: 24)
+                    .overlay {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.black.opacity(0.46))
+                            .allowsHitTesting(false)
+                    }
+                    .help(settings.text(.moveDesktopNote))
+                    .accessibilityLabel(settings.text(.moveDesktopNote))
             }
 
             Spacer(minLength: 2)
@@ -994,9 +1795,9 @@ struct NoteCard: View {
                     .minimumScaleFactor(0.72)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
-                    .background(
-                        deadline?.status == .overdue ? Color.red.opacity(0.10) : Color.black.opacity(0.055),
-                        in: RoundedRectangle(cornerRadius: 5)
+                    .dockNotesGlassCapsule(
+                        tint: deadline?.status == .overdue ? Color.red.opacity(0.12) : Color.white.opacity(0.06),
+                        interactive: true
                     )
             }
             .dockNotesChromeButton()
@@ -1005,7 +1806,7 @@ struct NoteCard: View {
                 DueDatePopover(note: note, store: store, settings: settings)
             }
 
-            Text(settings.text(.savedNow))
+            saveStatusLabel
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .fixedSize()
@@ -1017,7 +1818,7 @@ struct NoteCard: View {
             ) {
                 store.togglePinned(note.id)
             }
-            tinyButton("checklist", label: settings.text(.task)) { store.insertTask(for: note.id) }
+            tinyButton("checklist", label: settings.text(.task)) { taskInsertRequest = UUID() }
             tinyButton(
                 "magnifyingglass",
                 label: settings.text(.search),
@@ -1049,42 +1850,104 @@ struct NoteCard: View {
             }
             }
             .frame(height: 34)
+            .background {
+                if isDesktopNote && !isDesignPreview {
+                    DesktopWindowDragSurface(
+                        accessibilityIdentifier: "DockNotesDesktopTopDragRegion"
+                    )
+                    .help(settings.text(.moveDesktopNote))
+                    .accessibilityLabel(settings.text(.moveDesktopNote))
+                }
+            }
 
             HStack(spacing: 7) {
                 Circle()
                     .fill(note.gradient)
                     .frame(width: 7, height: 7)
                     .overlay(Circle().stroke(Color.white.opacity(0.65), lineWidth: 0.5))
-                TextField("", text: Binding(
-                    get: { store.note(id: note.id)?.title ?? note.title },
-                    set: { store.updateTitle($0, for: note.id) }
-                ))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14, weight: .bold))
-                    .accessibilityLabel("Note title")
+                if isDesignPreview {
+                    Text(note.title)
+                        .font(.system(size: 14, weight: .bold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    TextField("", text: Binding(
+                        get: { store.note(id: note.id)?.title ?? note.title },
+                        set: { store.updateTitle($0, for: note.id) }
+                    ))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, weight: .bold))
+                        .accessibilityLabel("Note title")
+                }
             }
             .frame(height: 29)
         }
         .padding(.horizontal, 14)
         .frame(height: 63)
+        .background(Color.white.opacity(0.055))
     }
 
+    @ViewBuilder
+    private var saveStatusLabel: some View {
+        switch store.saveState {
+        case .saving:
+            Text(settings.text(.saving))
+        case .saved:
+            Text(settings.text(.savedNow))
+        case let .failed(message):
+            Button {
+                store.retrySave()
+            } label: {
+                Text(settings.text(.saveFailed))
+                    .foregroundStyle(Color.red.opacity(0.82))
+            }
+            .buttonStyle(.plain)
+            .help(message)
+        }
+    }
+
+    @ViewBuilder
     private var editor: some View {
-        StableTextEditor(
-            text: store.note(id: note.id)?.body ?? note.body,
-            rtfData: store.note(id: note.id)?.bodyRTF ?? note.bodyRTF,
-            onChange: { body, rtfData in
-                store.updateRichBody(body, rtfData: rtfData, for: note.id)
-            },
-            fontStyle: note.fontStyle,
-            fontSize: note.fontSize,
-            searchQuery: isFindPresented ? searchQuery : "",
-            searchTopInset: isFindPresented ? 46 : 4,
-            formatRequest: $formatRequest
-        )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .accessibilityLabel(note.title)
+        if isDesignPreview {
+            VStack(alignment: .leading, spacing: 13) {
+                Text("把今天最重要的事情收进一张安静的便签。")
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text("确认版本说明与发布清单")
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: "circle").foregroundStyle(.secondary)
+                    Text("同步任务时间与系统日历")
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: "circle").foregroundStyle(.secondary)
+                    Text("整理工作区中的零散灵感")
+                }
+                Spacer()
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(Color.black.opacity(0.72))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .accessibilityHidden(true)
+        } else {
+            StableTextEditor(
+                text: store.note(id: note.id)?.body ?? note.body,
+                rtfData: store.note(id: note.id)?.bodyRTF ?? note.bodyRTF,
+                onChange: { body, rtfData in
+                    store.updateRichBody(body, rtfData: rtfData, for: note.id)
+                },
+                fontStyle: note.fontStyle,
+                fontSize: note.fontSize,
+                searchQuery: isFindPresented ? searchQuery : "",
+                searchTopInset: isFindPresented ? 46 : 4,
+                formatRequest: $formatRequest,
+                taskInsertRequest: $taskInsertRequest
+            )
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .accessibilityLabel(note.title)
+        }
     }
 
     private func closeSearch() {
@@ -1159,6 +2022,7 @@ struct NoteCard: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 43)
+        .background(Color.white.opacity(0.07))
     }
 
     private func formatButton(_ symbol: String, label: String, command: NoteFormatCommand) -> some View {
@@ -1264,10 +2128,12 @@ struct NoteCard: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .medium))
-                .frame(width: 17, height: 22)
-                .background(
-                    isActive ? Color.white.opacity(0.60) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .frame(width: 24, height: 24)
+                .dockNotesGlassPanel(
+                    radius: 8,
+                    tint: isActive ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.035),
+                    interactive: true,
+                    fallbackOpacity: isActive ? 0.44 : 0.18
                 )
                 .contentShape(Rectangle())
         }
@@ -1285,7 +2151,7 @@ struct NoteCard: View {
                 .contentShape(Rectangle())
         }
             .dockNotesChromeButton()
-            .background(Color.black.opacity(0.075), in: RoundedRectangle(cornerRadius: 6))
+            .dockNotesGlassPanel(radius: 8, tint: Color.white.opacity(0.035), interactive: true, fallbackOpacity: 0.20)
             .help(label)
             .accessibilityLabel(label)
     }
@@ -1336,19 +2202,19 @@ enum NoteHighlightFormatter {
     }
 }
 
-private enum NoteFormatCommand: Equatable {
+enum NoteFormatCommand: Equatable {
     case bold
     case underline
     case strikethrough
     case highlight(String?)
 }
 
-private struct NoteFormatRequest: Equatable {
+struct NoteFormatRequest: Equatable {
     let id = UUID()
     let command: NoteFormatCommand
 }
 
-private struct StableTextEditor: NSViewRepresentable {
+struct StableTextEditor: NSViewRepresentable {
     let text: String
     let rtfData: Data?
     let onChange: (String, Data?) -> Void
@@ -1357,12 +2223,20 @@ private struct StableTextEditor: NSViewRepresentable {
     let searchQuery: String
     let searchTopInset: CGFloat
     @Binding var formatRequest: NoteFormatRequest?
+    @Binding var taskInsertRequest: UUID?
 
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        let scrollView = NSScrollView()
+        let textView = TaskCheckboxTextView(frame: .zero)
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        scrollView.documentView = textView
         textView.delegate = context.coordinator
         textView.isRichText = true
         textView.allowsUndo = true
@@ -1409,6 +2283,14 @@ private struct StableTextEditor: NSViewRepresentable {
             coordinator.persist(textView, asynchronously: true)
             DispatchQueue.main.async {
                 if formatRequest?.id == request.id { formatRequest = nil }
+            }
+        }
+
+        if let request = taskInsertRequest, coordinator.lastTaskInsertRequestID != request {
+            coordinator.lastTaskInsertRequestID = request
+            DispatchQueue.main.async { [weak textView] in
+                textView.flatMap { $0 as? TaskCheckboxTextView }?.insertTaskAtSelection()
+                if taskInsertRequest == request { taskInsertRequest = nil }
             }
         }
 
@@ -1576,7 +2458,8 @@ private struct StableTextEditor: NSViewRepresentable {
 
     private static func attributeIsActive(_ value: Any?, key: NSAttributedString.Key) -> Bool {
         if key == .backgroundColor { return value is NSColor }
-        return (value as? NSNumber)?.intValue != 0
+        guard let number = value as? NSNumber else { return false }
+        return number.intValue != 0
     }
 
     private func applySearchHighlights(to textView: NSTextView, coordinator: Coordinator) {
@@ -1595,6 +2478,7 @@ private struct StableTextEditor: NSViewRepresentable {
         var lastRTFData: Data?
         var lastSearchQuery = ""
         var lastFormatRequestID: UUID?
+        var lastTaskInsertRequestID: UUID?
         var fontIdentity: FontIdentity?
 
         init(onChange: @escaping (String, Data?) -> Void) {
@@ -1664,6 +2548,70 @@ private struct StableTextEditor: NSViewRepresentable {
     }
 }
 
+final class TaskCheckboxTextView: NSTextView {
+    func insertTaskAtSelection() {
+        let replacement = "☐ "
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: replacement),
+              let storage = textStorage else { return }
+        storage.replaceCharacters(
+            in: range,
+            with: NSAttributedString(string: replacement, attributes: typingAttributes)
+        )
+        setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
+        didChangeText()
+        window?.makeFirstResponder(self)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let markerRange = taskMarker(at: convert(event.locationInWindow, from: nil)),
+              let storage = textStorage else {
+            super.mouseDown(with: event)
+            return
+        }
+        let current = (storage.string as NSString).substring(with: markerRange)
+        let replacement = current == "☐" ? "☑" : "☐"
+        guard shouldChangeText(in: markerRange, replacementString: replacement) else { return }
+        let selection = selectedRange()
+        storage.replaceCharacters(in: markerRange, with: replacement)
+        let line = (storage.string as NSString).lineRange(for: markerRange)
+        let contentStart = markerRange.location + 2
+        let lineText = (storage.string as NSString).substring(with: line)
+        let contentEnd = NSMaxRange(line) - (lineText.hasSuffix("\n") ? 1 : 0)
+        if contentEnd > contentStart {
+            let contentRange = NSRange(location: contentStart, length: contentEnd - contentStart)
+            if replacement == "☑" {
+                storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: contentRange)
+            } else {
+                storage.removeAttribute(.strikethroughStyle, range: contentRange)
+            }
+        }
+        setSelectedRange(selection)
+        didChangeText()
+    }
+
+    private func taskMarker(at point: NSPoint) -> NSRange? {
+        guard let layoutManager, let textContainer else { return nil }
+        let location = NSPoint(
+            x: point.x - textContainerOrigin.x,
+            y: point.y - textContainerOrigin.y
+        )
+        let glyphIndex = layoutManager.glyphIndex(for: location, in: textContainer)
+        guard glyphIndex < layoutManager.numberOfGlyphs else { return nil }
+        let glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1), in: textContainer
+        )
+        guard glyphRect.contains(location) else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let body = string as NSString
+        guard index < body.length,
+              index + 1 < body.length, body.character(at: index + 1) == 32 else { return nil }
+        let marker = body.substring(with: NSRange(location: index, length: 1))
+        guard marker == "☐" || marker == "☑" else { return nil }
+        return NSRange(location: index, length: 1)
+    }
+}
+
 private struct FontEditorPopover: View {
     let note: DockNote
     @ObservedObject var store: NotesStore
@@ -1705,11 +2653,18 @@ private struct NoteSpine: View {
 
     var body: some View {
         ZStack(alignment: .trailing) {
-            NoteSurface(note: note).brightness(-0.035)
+            NoteSurface(note: note)
+                .opacity(0.40)
+                .brightness(-0.025)
             Rectangle()
-                .stroke(style: StrokeStyle(lineWidth: 0.7, dash: [2, 3]))
-                .foregroundStyle(Color.black.opacity(0.18))
-                .frame(width: 0.7)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.62), Color.white.opacity(0.14)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: 0.8)
             Text(note.title)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.black.opacity(0.74))
@@ -1727,6 +2682,11 @@ private struct NoteSurface: View {
     var body: some View {
         ZStack {
             note.gradient
+            LinearGradient(
+                colors: [Color.white.opacity(0.24), Color.white.opacity(0.06), Color.clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
             if note.material == .paper {
                 Image(nsImage: PaperTexture.image)
                     .resizable(resizingMode: .tile)
@@ -1820,6 +2780,7 @@ private struct DueDatePopover: View {
         }
         .padding(14)
         .frame(width: 300)
+        .dockNotesGlassPanel(radius: 16, tint: Color.white.opacity(0.08))
         .onChange(of: note.dueDate) { _, date in
             guard !isTimeFieldFocused, let date else { return }
             timeText = ReminderTimeInput.format(date)
@@ -1871,11 +2832,7 @@ private struct InNoteSearchBar: View {
         .padding(.leading, 10)
         .padding(.trailing, 5)
         .frame(width: 270, height: 32)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.black.opacity(0.10), lineWidth: 0.65)
-        }
+        .dockNotesGlassPanel(radius: 11, tint: Color.white.opacity(0.08), interactive: true)
         .shadow(color: Color.black.opacity(0.10), radius: 8, y: 3)
         .onAppear { isFocused = true }
     }
@@ -1885,6 +2842,7 @@ private struct AIAssistantPanel: View {
     let note: DockNote
     @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
+    var isDesignPreview = false
     let closeAction: () -> Void
     @State private var prompt = ""
     @State private var response = ""
@@ -1917,7 +2875,7 @@ private struct AIAssistantPanel: View {
 
             Divider().opacity(0.12)
 
-            if settings.isAIConfigured {
+            if settings.isAIConfigured || isDesignPreview {
                 VStack(alignment: .leading, spacing: 10) {
                     Group {
                         if isLoading {
@@ -1974,14 +2932,22 @@ private struct AIAssistantPanel: View {
 
                     HStack(alignment: .bottom, spacing: 9) {
                         ZStack(alignment: .topLeading) {
-                            TextEditor(text: $prompt)
-                                .font(.system(size: 12))
-                                .scrollContentBackground(.hidden)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 3)
-                                .frame(minHeight: 46, maxHeight: 72)
-                            if prompt.isEmpty {
+                            if isDesignPreview {
                                 Text(settings.text(.aiPrompt))
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 11)
+                            } else {
+                                TextEditor(text: $prompt)
+                                    .font(.system(size: 12))
+                                    .scrollContentBackground(.hidden)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 3)
+                                    .frame(minHeight: 46, maxHeight: 72)
+                            }
+                            if prompt.isEmpty {
+                                Text(isDesignPreview ? "" : settings.text(.aiPrompt))
                                     .font(.system(size: 12))
                                     .foregroundStyle(.tertiary)
                                     .padding(.horizontal, 9)
@@ -1989,18 +2955,16 @@ private struct AIAssistantPanel: View {
                                     .allowsHitTesting(false)
                             }
                         }
-                        .background(Color.white.opacity(0.34), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.black.opacity(0.08), lineWidth: 0.6)
-                        }
+                        .frame(minHeight: 46, maxHeight: 72, alignment: .topLeading)
+                        .dockNotesGlassPanel(radius: 13, tint: Color.white.opacity(0.07), interactive: true)
 
                         Button(action: sendRequest) {
                             Image(systemName: "arrow.up")
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(Color.white)
                                 .frame(width: 28, height: 28)
-                                .background(Color.accentColor, in: Circle())
+                                .background(Color.accentColor.opacity(0.82), in: Circle())
+                                .dockNotesGlass(in: Circle(), tint: Color.accentColor.opacity(0.22), interactive: true)
                                 .contentShape(Circle())
                         }
                         .dockNotesChromeButton()
@@ -2028,7 +2992,12 @@ private struct AIAssistantPanel: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white.opacity(0.10))
+        .dockNotesGlassPanel(
+            radius: 16,
+            tint: Color(hex: note.gradientEndHex ?? note.colorHex).opacity(0.08),
+            clear: true,
+            fallbackOpacity: 0.18
+        )
     }
 
     private func sendRequest() {
@@ -2220,20 +3189,488 @@ private struct CustomColorEditor: View {
     }
 }
 
+struct TaskCenterView: View {
+    @ObservedObject var store: NotesStore
+    @ObservedObject var settings: AppSettings
+    @State private var section: TaskCenterSection = .inbox
+    @State private var searchQuery = ""
+
+    private var counts: TaskCenterCounts {
+        TaskCenterQuery.counts(in: store.notes)
+    }
+
+    private var displayedItems: [ChecklistItem] {
+        TaskCenterQuery.apply(to: store.notes, section: section, query: searchQuery)
+    }
+
+    private var weekDayGroups: [TaskPlanDayGroup] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: displayedItems) { item in
+            calendar.startOfDay(for: item.dueDate ?? .distantFuture)
+        }
+        return grouped.keys.sorted().map { day in
+            TaskPlanDayGroup(day: day, items: grouped[day] ?? [])
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            VStack(spacing: 0) {
+                header
+                Divider()
+                summary
+                if displayedItems.isEmpty {
+                    ContentUnavailableView(
+                        settings.text(.noTasks),
+                        systemImage: section == .completed ? "checkmark.circle" : "checklist",
+                        description: Text(searchQuery.isEmpty ? sectionTitle(section) : settings.text(.searchTasks))
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 9) {
+                            if section == .week {
+                                ForEach(weekDayGroups) { group in
+                                    HStack(spacing: 8) {
+                                        Text(Calendar.current.isDateInToday(group.day)
+                                            ? settings.text(.today)
+                                            : group.day.formatted(.dateTime.weekday(.wide).month().day()))
+                                            .font(.system(size: 11, weight: .bold))
+                                        Text("\(group.items.count)")
+                                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 3)
+                                    .padding(.top, 8)
+                                    ForEach(group.items) { item in
+                                        TaskCenterRow(item: item, store: store, settings: settings)
+                                    }
+                                }
+                            } else {
+                                ForEach(displayedItems) { item in
+                                    TaskCenterRow(item: item, store: store, settings: settings)
+                                }
+                            }
+                        }
+                        .padding(18)
+                    }
+                }
+            }
+        }
+        .frame(width: 860, height: 560)
+        .background(DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[0].startHex)))
+        .background {
+            if !DockNotesGlassRuntime.isStaticRendering {
+                DockNotesGlassWindowChrome().frame(width: 0, height: 0)
+            }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(NotePalette.gradients[0].swiftUIGradient)
+                    Image(systemName: "checklist")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.black.opacity(0.64))
+                }
+                .frame(width: 34, height: 34)
+                Text(settings.text(.taskCenter))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 20)
+            .padding(.bottom, 18)
+
+            VStack(spacing: 6) {
+                sectionButton(.inbox, symbol: "tray.full")
+                sectionButton(.today, symbol: "sun.max")
+                sectionButton(.week, symbol: "calendar.badge.clock")
+                sectionButton(.upcoming, symbol: "calendar")
+                sectionButton(.overdue, symbol: "exclamationmark.circle")
+                sectionButton(.completed, symbol: "checkmark.circle")
+            }
+            .padding(.horizontal, 10)
+            Spacer()
+            Button {
+                store.presentLibrary()
+            } label: {
+                Label(settings.text(.library), systemImage: "rectangle.stack.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.05), interactive: true)
+            }
+            .dockNotesChromeButton()
+            .padding(10)
+        }
+        .frame(width: 184)
+        .background(Color.white.opacity(0.09))
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(sectionTitle(section))
+                    .font(.system(size: 18, weight: .semibold))
+                Text("\(displayedItems.count)")
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                TextField(settings.text(.searchTasks), text: $searchQuery)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                if !searchQuery.isEmpty {
+                    Button { searchQuery = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .dockNotesChromeButton()
+                    .accessibilityLabel(settings.text(.clear))
+                }
+            }
+            .padding(.horizontal, 11)
+            .frame(width: 280, height: 34)
+            .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.05), interactive: true)
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 64)
+    }
+
+    private var summary: some View {
+        HStack(spacing: 8) {
+            summaryPill(.today, color: Color(hex: NotePalette.gradients[0].startHex))
+            summaryPill(.week, color: Color(hex: NotePalette.gradients[1].startHex))
+            summaryPill(.overdue, color: Color(hex: NotePalette.gradients[4].endHex))
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+    }
+
+    private func sectionButton(_ value: TaskCenterSection, symbol: String) -> some View {
+        Button { section = value } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18)
+                Text(sectionTitle(value))
+                    .font(.system(size: 12, weight: section == value ? .bold : .medium))
+                Spacer()
+                Text("\(counts[value])")
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(section == value ? Color.primary : Color.secondary)
+            .padding(.horizontal, 11)
+            .frame(height: 36)
+            .background(
+                section == value ? Color.accentColor.opacity(0.13) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .dockNotesGlassPanel(
+                radius: 10,
+                tint: section == value ? Color.accentColor.opacity(0.10) : Color.white.opacity(0.02),
+                interactive: true,
+                fallbackOpacity: 0.12
+            )
+        }
+        .dockNotesChromeButton()
+    }
+
+    private func summaryPill(_ value: TaskCenterSection, color: Color) -> some View {
+        Button { section = value } label: {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 7, height: 7)
+                Text(sectionTitle(value))
+                Text("\(counts[value])").monospacedDigit()
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 27)
+            .dockNotesGlassCapsule(tint: color.opacity(0.08), interactive: true, fallbackOpacity: 0.16)
+        }
+        .dockNotesChromeButton()
+    }
+
+    private func sectionTitle(_ value: TaskCenterSection) -> String {
+        switch value {
+        case .inbox: settings.text(.taskInbox)
+        case .today: settings.text(.today)
+        case .week: settings.text(.weekPlan)
+        case .upcoming: settings.text(.upcoming)
+        case .overdue: settings.text(.overdue)
+        case .completed: settings.text(.completed)
+        }
+    }
+}
+
+private struct TaskPlanDayGroup: Identifiable {
+    let day: Date
+    let items: [ChecklistItem]
+    var id: Date { day }
+}
+
+private struct TaskCenterRow: View {
+    let item: ChecklistItem
+    @ObservedObject var store: NotesStore
+    @ObservedObject var settings: AppSettings
+    @State private var duePopoverPresented = false
+    @State private var dueDraft = Date().addingTimeInterval(3_600)
+    @State private var repeatEnabledDraft = false
+    @State private var recurrenceFrequencyDraft: TaskRecurrenceFrequency = .daily
+    @State private var recurrenceIntervalDraft = 1
+
+    private var deadline: DeadlinePresentation? {
+        item.dueDate.map { DeadlinePresentation.make(for: $0, language: settings.language) }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                if !item.isProjectedOccurrence {
+                    store.setChecklistItemCompleted(item.id, completed: !item.isCompleted)
+                }
+            } label: {
+                Image(systemName: item.isProjectedOccurrence
+                    ? "circle.dashed"
+                    : (item.isCompleted ? "checkmark.circle.fill" : "circle"))
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(item.isCompleted ? Color.green : Color.secondary)
+                    .contentShape(Rectangle())
+            }
+            .dockNotesChromeButton()
+            .accessibilityIdentifier(
+                "DockNotesTaskCheckbox-\(item.noteID.uuidString)-\(item.id.markerUTF16Offset)"
+            )
+            .accessibilityLabel(item.isCompleted ? settings.text(.incomplete) : settings.text(.completed))
+            .disabled(item.isProjectedOccurrence)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.text.isEmpty ? settings.text(.addTask) : item.text)
+                    .font(.system(size: 13, weight: .medium))
+                    .strikethrough(item.isCompleted, color: .secondary)
+                    .foregroundStyle(item.isCompleted ? Color.secondary : Color.primary)
+                    .lineLimit(2)
+                Button {
+                    store.openFromTaskCenter(item.noteID)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "note.text")
+                        Text(item.noteTitle.isEmpty ? settings.text(.newNote) : item.noteTitle)
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                }
+                .dockNotesChromeButton()
+                .help(settings.text(.sourceNote))
+                if let rule = item.recurrenceRule {
+                    HStack(spacing: 5) {
+                        Image(systemName: "repeat")
+                        Text(recurrenceLabel(rule))
+                        if item.isProjectedOccurrence {
+                            Text("· \(settings.text(.projectedOccurrence))")
+                        }
+                    }
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                prepareScheduleDraft()
+                duePopoverPresented = true
+            } label: {
+                Label(
+                    deadline?.toolbarLabel ?? settings.text(.unscheduled),
+                    systemImage: deadline?.status == .overdue ? "exclamationmark.circle" : "calendar"
+                )
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(deadline?.status == .overdue ? Color.red.opacity(0.78) : Color.secondary)
+                .padding(.horizontal, 9)
+                .frame(height: 29)
+                .background(Color.primary.opacity(0.045), in: Capsule())
+            }
+            .dockNotesChromeButton()
+            .popover(isPresented: $duePopoverPresented, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(settings.text(.dueDate))
+                        .font(.system(size: 13, weight: .bold))
+                    DatePicker(
+                        "",
+                        selection: $dueDraft,
+                        displayedComponents: [.date, .hourAndMinute]
+                    )
+                    .labelsHidden()
+                    Divider()
+                    Toggle(settings.text(.repeatTask), isOn: $repeatEnabledDraft)
+                        .toggleStyle(.switch)
+                    if repeatEnabledDraft {
+                        Picker("", selection: $recurrenceFrequencyDraft) {
+                            ForEach(TaskRecurrenceFrequency.allCases, id: \.self) { frequency in
+                                Text(recurrenceTitle(frequency)).tag(frequency)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        HStack {
+                            Text(settings.text(.repeatInterval))
+                                .font(.system(size: 11, weight: .semibold))
+                            Spacer()
+                            Stepper(
+                                "\(recurrenceIntervalDraft)",
+                                value: $recurrenceIntervalDraft,
+                                in: 1...365
+                            )
+                            .fixedSize()
+                        }
+                    }
+                    if item.recurrenceRule != nil {
+                        Divider()
+                        HStack {
+                            Button(settings.text(.skipThisOccurrence)) {
+                                store.skipTaskOccurrence(item.id)
+                                duePopoverPresented = false
+                            }
+                            Button(settings.text(.stopRepeating), role: .destructive) {
+                                store.stopTaskRecurrence(item.id)
+                                duePopoverPresented = false
+                            }
+                            Spacer()
+                        }
+                    }
+                    HStack {
+                        if item.dueDate != nil && item.recurrenceRule == nil {
+                            Button(settings.text(.clear)) {
+                                store.setChecklistItemDueDate(item.id, date: nil)
+                                duePopoverPresented = false
+                            }
+                        }
+                        Spacer()
+                        if item.recurrenceRule != nil {
+                            Button(settings.text(.onlyThisOccurrence)) {
+                                store.rescheduleTaskOccurrence(item.id, to: dueDraft)
+                                duePopoverPresented = false
+                            }
+                        }
+                        Button(item.recurrenceRule == nil
+                            ? settings.text(.apply)
+                            : settings.text(.entireSeries)) {
+                            applyScheduleDraft()
+                            duePopoverPresented = false
+                        }
+                        .keyboardShortcut(.defaultAction)
+                    }
+                }
+                .padding(14)
+                .frame(width: 360)
+            }
+
+            Button {
+                store.openFromTaskCenter(item.noteID)
+            } label: {
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 28, height: 28)
+                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+            }
+            .dockNotesChromeButton()
+            .accessibilityLabel(settings.text(.openNote))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .dockNotesGlassPanel(radius: 13, tint: Color.white.opacity(0.04), interactive: true)
+    }
+
+    private func prepareScheduleDraft() {
+        dueDraft = item.dueDate ?? Date().addingTimeInterval(3_600)
+        repeatEnabledDraft = item.recurrenceRule != nil
+        recurrenceFrequencyDraft = item.recurrenceRule?.frequency ?? .daily
+        recurrenceIntervalDraft = item.recurrenceRule?.interval ?? 1
+    }
+
+    private func applyScheduleDraft() {
+        guard repeatEnabledDraft else {
+            if item.recurrenceRule != nil {
+                _ = store.stopTaskRecurrence(item.id)
+            }
+            _ = store.setChecklistItemDueDate(item.id, date: dueDraft)
+            return
+        }
+        let rule = TaskRecurrenceRule(
+            frequency: recurrenceFrequencyDraft,
+            interval: recurrenceIntervalDraft
+        )
+        if item.recurrenceRule == nil {
+            _ = store.setTaskRecurrence(item.id, rule: rule, startingAt: dueDraft)
+        } else {
+            _ = store.updateTaskRecurrenceSeries(item.id, rule: rule, startingAt: dueDraft)
+        }
+    }
+
+    private func recurrenceTitle(_ frequency: TaskRecurrenceFrequency) -> String {
+        switch frequency {
+        case .daily: settings.text(.repeatDaily)
+        case .weekdays: settings.text(.repeatWeekdays)
+        case .weekly: settings.text(.repeatWeekly)
+        case .monthly: settings.text(.repeatMonthly)
+        }
+    }
+
+    private func recurrenceLabel(_ rule: TaskRecurrenceRule) -> String {
+        let title = recurrenceTitle(rule.frequency)
+        return rule.interval == 1 ? title : "\(title) × \(rule.interval)"
+    }
+}
+
 struct NotesLibraryView: View {
     private enum Collection: String, CaseIterable { case all, archived }
+    private enum WorkspaceScope: String, CaseIterable { case all, current }
 
     @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
     @State private var collection: Collection = .all
+    @State private var workspaceScope: WorkspaceScope = .all
+    @State private var workspaceFilterID: NoteWorkspace.ID?
     @State private var searchQuery = ""
+    @State private var filter: LibraryFilter = .all
+    @State private var sort: LibrarySort = .modified
+    @State private var selectedNoteID: DockNote.ID?
+    @State private var selectedNoteIDs: Set<DockNote.ID> = []
+    @State private var isWorkspaceManagerPresented = false
+    @State private var transferMessage: String?
+    @State private var transferSucceeded = true
 
     private var sourceNotes: [DockNote] {
-        collection == .all ? store.notes : store.archivedNotes
+        let collectionNotes = collection == .all ? store.notes : store.archivedNotes
+        let scopedNotes = workspaceScope == .current
+            ? collectionNotes.filter { $0.workspaceID == store.activeWorkspaceID }
+            : collectionNotes
+        guard let workspaceFilterID, workspaceScope == .all else { return scopedNotes }
+        return scopedNotes.filter { $0.workspaceID == workspaceFilterID }
     }
 
     private var displayedNotes: [DockNote] {
-        NoteSearchEngine.rankedNotes(sourceNotes, query: searchQuery)
+        LibraryQuery.apply(to: sourceNotes, query: searchQuery, filter: filter, sort: sort)
+    }
+
+    private var selectedNote: DockNote? {
+        displayedNotes.first(where: { $0.id == selectedNoteID }) ?? displayedNotes.first
     }
 
     var body: some View {
@@ -2242,6 +3679,33 @@ struct NotesLibraryView: View {
                 Label(settings.text(.library), systemImage: "rectangle.stack.fill")
                     .font(.system(size: 18, weight: .semibold))
                 Spacer()
+                Button {
+                    store.presentTaskCenter()
+                } label: {
+                    Label(settings.text(.taskCenter), systemImage: "checklist")
+                }
+                Button(action: importNoteFiles) {
+                    Label(settings.text(.importNotes), systemImage: "square.and.arrow.down")
+                }
+                Menu {
+                    Button(settings.text(.exportMarkdown)) { exportDisplayedNotes(as: .markdown) }
+                    Button(settings.text(.exportText)) { exportDisplayedNotes(as: .text) }
+                } label: {
+                    Label(settings.text(.exportNotes), systemImage: "square.and.arrow.up")
+                }
+                .disabled(displayedNotes.isEmpty)
+                if !selectedNoteIDs.isEmpty {
+                    Menu {
+                        ForEach(store.workspaces) { workspace in
+                            Button(workspace.name) {
+                                store.moveNotes(selectedNoteIDs, toWorkspace: workspace.id)
+                                selectedNoteIDs.removeAll()
+                            }
+                        }
+                    } label: {
+                        Label("\(settings.text(.moveToWorkspace)) · \(selectedNoteIDs.count)", systemImage: "folder")
+                    }
+                }
                 Picker("", selection: $collection) {
                     Text("\(settings.text(.allNotes))  \(store.notes.count)").tag(Collection.all)
                     Text("\(settings.text(.archivedNotes))  \(store.archivedNotes.count)").tag(Collection.archived)
@@ -2258,6 +3722,7 @@ struct NotesLibraryView: View {
             }
             .padding(.horizontal, 22)
             .frame(height: 64)
+            .dockNotesGlassPanel(radius: 0, tint: Color.white.opacity(0.05))
 
             Divider()
 
@@ -2285,13 +3750,46 @@ struct NotesLibraryView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(Color.black.opacity(0.07), lineWidth: 0.6)
-            }
+            .dockNotesGlassPanel(radius: 11, tint: Color.white.opacity(0.05), interactive: true)
             .padding(.horizontal, 18)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+
+            HStack(spacing: 10) {
+                Picker("", selection: $workspaceScope) {
+                    Text(settings.text(.allWorkspaces)).tag(WorkspaceScope.all)
+                    Text(settings.text(.currentWorkspace)).tag(WorkspaceScope.current)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 210)
+                Picker(settings.text(.workspaces), selection: $workspaceFilterID) {
+                    Text(settings.text(.allWorkspaces)).tag(Optional<NoteWorkspace.ID>.none)
+                    ForEach(store.workspaces) { workspace in
+                        Text(workspace.name).tag(Optional(workspace.id))
+                    }
+                }
+                .frame(width: 170)
+                .disabled(workspaceScope == .current)
+                Picker(settings.text(.filter), selection: $filter) {
+                    Text(settings.text(.allNotes)).tag(LibraryFilter.all)
+                    Text(settings.text(.pin)).tag(LibraryFilter.pinned)
+                    Text(settings.text(.incomplete)).tag(LibraryFilter.incomplete)
+                    Text(settings.text(.overdue)).tag(LibraryFilter.overdue)
+                }
+                Picker(settings.text(.sort), selection: $sort) {
+                    Text(settings.text(.recentModified)).tag(LibrarySort.modified)
+                    Text(settings.text(.dueFirst)).tag(LibrarySort.due)
+                    Text(settings.text(.newestCreated)).tag(LibrarySort.created)
+                }
+                Spacer()
+                Button {
+                    isWorkspaceManagerPresented = true
+                } label: {
+                    Label(settings.text(.manageWorkspaces), systemImage: "slider.horizontal.3")
+                }
+            }
+            .labelsHidden()
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
 
             if displayedNotes.isEmpty {
                 ContentUnavailableView(
@@ -2299,11 +3797,28 @@ struct NotesLibraryView: View {
                     systemImage: searchQuery.isEmpty ? "archivebox" : "magnifyingglass",
                     description: Text(searchQuery.isEmpty ? settings.text(.archivedNotes) : settings.text(.searchLibrary))
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
+                HStack(spacing: 0) {
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
                         ForEach(displayedNotes) { note in
                             HStack(spacing: 13) {
+                                Button {
+                                    if selectedNoteIDs.contains(note.id) {
+                                        selectedNoteIDs.remove(note.id)
+                                    } else {
+                                        selectedNoteIDs.insert(note.id)
+                                    }
+                                } label: {
+                                    Image(systemName: selectedNoteIDs.contains(note.id)
+                                        ? "checkmark.circle.fill"
+                                        : "circle")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(selectedNoteIDs.contains(note.id) ? Color.accentColor : Color.secondary)
+                                }
+                                .dockNotesChromeButton()
+                                .accessibilityLabel(settings.text(.selectedNotes))
                                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                                     .fill(note.gradient)
                                     .frame(width: 9, height: 44)
@@ -2325,6 +3840,18 @@ struct NotesLibraryView: View {
                                         .font(.system(size: 11))
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
+                                    if let workspaceID = note.workspaceID,
+                                       let workspace = store.workspace(id: workspaceID) {
+                                        HStack(spacing: 4) {
+                                            Circle()
+                                                .fill(Color(hex: workspace.colorHex))
+                                                .frame(width: 6, height: 6)
+                                            Text(workspace.name)
+                                                .lineLimit(1)
+                                        }
+                                        .font(.system(size: 8, weight: .medium))
+                                        .foregroundStyle(.tertiary)
+                                    }
                                 }
                                 Spacer()
                                 Text(note.modifiedAt.formatted(date: .abbreviated, time: .shortened))
@@ -2372,15 +3899,105 @@ struct NotesLibraryView: View {
                             }
                             .padding(.horizontal, 14)
                             .frame(height: 64)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.52), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                            .background(
+                                selectedNote?.id == note.id
+                                    ? Color.accentColor.opacity(0.12)
+                                    : Color.white.opacity(0.035),
+                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            )
+                            .dockNotesGlassPanel(
+                                radius: 12,
+                                tint: selectedNote?.id == note.id
+                                    ? Color.accentColor.opacity(0.10)
+                                    : Color.white.opacity(0.025),
+                                interactive: true,
+                                fallbackOpacity: 0.16
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                            .onTapGesture(count: 2) {
+                                guard collection == .all else { return }
+                                store.openFromLibrary(note.id)
+                            }
+                            .onTapGesture { selectedNoteID = note.id }
                         }
                     }
                     .padding(16)
+                    }
+                    .frame(minWidth: 540)
+                    Divider()
+                    libraryPreview
+                        .frame(width: 270)
                 }
+                .id(collection)
             }
         }
-        .frame(width: 680, height: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(width: 860, height: 560, alignment: .top)
+        .background(DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[2].startHex)))
+        .background {
+            if !DockNotesGlassRuntime.isStaticRendering {
+                DockNotesGlassWindowChrome().frame(width: 0, height: 0)
+            }
+        }
+        .onChange(of: collection) { _, _ in
+            selectedNoteID = nil
+            selectedNoteIDs.removeAll()
+            filter = .all
+        }
+        .onChange(of: workspaceScope) { _, _ in
+            workspaceFilterID = nil
+            selectedNoteID = nil
+            selectedNoteIDs.removeAll()
+        }
+        .onChange(of: workspaceFilterID) { _, _ in
+            selectedNoteID = nil
+            selectedNoteIDs.removeAll()
+        }
+        .sheet(isPresented: $isWorkspaceManagerPresented) {
+            WorkspaceManagementView(store: store, settings: settings)
+        }
+        .alert(
+            settings.text(transferSucceeded ? .transferComplete : .transferFailed),
+            isPresented: Binding(
+                get: { transferMessage != nil },
+                set: { if !$0 { transferMessage = nil } }
+            )
+        ) {
+            Button("OK") { transferMessage = nil }
+        } message: {
+            Text(transferMessage ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var libraryPreview: some View {
+        if let note = selectedNote {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(settings.text(.preview))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(note.gradient)
+                    .frame(height: 8)
+                Text(note.title.isEmpty ? settings.text(.newNote) : note.title)
+                    .font(.system(size: 16, weight: .bold))
+                    .lineLimit(2)
+                ScrollView {
+                    Text(note.body.isEmpty ? "—" : note.body)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+                if collection == .all {
+                    Button(settings.text(.openNote)) { store.openFromLibrary(note.id) }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(16)
+            .dockNotesGlassPanel(radius: 16, tint: Color(hex: note.colorHex).opacity(0.06))
+            .padding(10)
+        }
     }
 
     private func libraryActionButton(
@@ -2394,62 +4011,381 @@ struct NotesLibraryView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(destructive ? Color.red.opacity(0.82) : Color.secondary)
                 .frame(width: 26, height: 26)
-                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
+                .dockNotesGlassPanel(
+                    radius: 8,
+                    tint: destructive ? Color.red.opacity(0.06) : Color.white.opacity(0.03),
+                    interactive: true,
+                    fallbackOpacity: 0.15
+                )
                 .contentShape(Rectangle())
         }
         .dockNotesChromeButton()
         .help(label)
         .accessibilityLabel(label)
     }
+
+    private func importNoteFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = ["md", "markdown", "txt"].compactMap {
+            UTType(filenameExtension: $0)
+        }
+        guard panel.runModal() == .OK else { return }
+        let accessedURLs = panel.urls.filter { $0.startAccessingSecurityScopedResource() }
+        defer { accessedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+        do {
+            let count = try store.importNotes(from: panel.urls)
+            transferSucceeded = true
+            transferMessage = "\(settings.text(.importNotes)): \(count)"
+        } catch {
+            transferSucceeded = false
+            transferMessage = error.localizedDescription
+        }
+    }
+
+    private func exportDisplayedNotes(as format: NoteExportFormat) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        let accessed = directory.startAccessingSecurityScopedResource()
+        defer { if accessed { directory.stopAccessingSecurityScopedResource() } }
+        do {
+            let urls = try store.exportNotes(displayedNotes, to: directory, format: format)
+            transferSucceeded = true
+            transferMessage = "\(settings.text(.exportNotes)): \(urls.count)"
+        } catch {
+            transferSucceeded = false
+            transferMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct WorkspaceColorPaletteView: View {
+    let selectedHex: String
+    let language: AppLanguage
+    let onSelect: (String) -> Void
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+    private let chineseNames = ["晨光", "雾绿", "杏子", "藤紫", "柠檬", "青绿"]
+    private let englishNames = ["Sunrise", "Sage", "Apricot", "Lavender", "Citrus", "Mint"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(language == .english ? "Workspace color" : "工作区颜色")
+                .font(.system(size: 12, weight: .semibold))
+
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(Array(NotePalette.gradients.enumerated()), id: \.offset) { index, gradient in
+                    let isSelected = selectedHex.caseInsensitiveCompare(gradient.startHex) == .orderedSame
+                    Button {
+                        onSelect(gradient.startHex)
+                    } label: {
+                        VStack(spacing: 5) {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(Color(hex: gradient.startHex))
+                                .frame(height: 42)
+                                .overlay(alignment: .topLeading) {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [Color.white.opacity(0.46), .clear],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        .allowsHitTesting(false)
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .strokeBorder(
+                                            isSelected ? Color.accentColor : Color.black.opacity(0.16),
+                                            lineWidth: isSelected ? 2 : 0.7
+                                        )
+                                }
+                                .overlay(alignment: .bottomTrailing) {
+                                    if isSelected {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundStyle(Color.accentColor, Color.white)
+                                            .padding(4)
+                                    }
+                                }
+                            Text(language == .english ? englishNames[index] : chineseNames[index])
+                                .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(language == .english ? englishNames[index] : chineseNames[index]), \(gradient.startHex)")
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 280)
+        .dockNotesGlassPanel(radius: 14, tint: Color.white.opacity(0.07))
+    }
+}
+
+struct WorkspaceManagementView: View {
+    @ObservedObject var store: NotesStore
+    @ObservedObject var settings: AppSettings
+    var size = CGSize(width: 600, height: 480)
+    var onClose: (() -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+    @State private var workspacePendingDeletion: NoteWorkspace?
+    @State private var colorPickerWorkspaceID: NoteWorkspace.ID?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(settings.text(.manageWorkspaces))
+                        .font(.system(size: 18, weight: .bold))
+                    Text(settings.language == .english
+                        ? "Each note belongs to one workspace. Deleting a workspace never deletes its notes."
+                        : "每张便签属于一个工作区；删除工作区不会删除其中的便签。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(settings.text(.close)) {
+                    if let onClose { onClose() } else { dismiss() }
+                }
+                    .dockNotesChromeButton()
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.05), interactive: true)
+            }
+            .padding(18)
+            .background(Color.white.opacity(0.08))
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(Array(store.workspaces.enumerated()), id: \.element.id) { index, workspace in
+                        HStack(spacing: 12) {
+                            Button {
+                                colorPickerWorkspaceID = workspace.id
+                            } label: {
+                                Circle()
+                                    .fill(Color(hex: workspace.colorHex))
+                                    .frame(width: 22, height: 22)
+                                    .overlay(Circle().stroke(Color.white.opacity(0.8), lineWidth: 1))
+                                    .shadow(color: Color.black.opacity(0.10), radius: 2, y: 1)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(settings.language == .english ? "Change workspace color" : "更改工作区颜色")
+                            .popover(
+                                isPresented: Binding(
+                                    get: { colorPickerWorkspaceID == workspace.id },
+                                    set: { if !$0 { colorPickerWorkspaceID = nil } }
+                                ),
+                                arrowEdge: .trailing
+                            ) {
+                                WorkspaceColorPaletteView(
+                                    selectedHex: workspace.colorHex,
+                                    language: settings.language
+                                ) { colorHex in
+                                    _ = store.setWorkspaceColor(workspace.id, colorHex: colorHex)
+                                    colorPickerWorkspaceID = nil
+                                }
+                            }
+                            .frame(width: 28)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                TextField(
+                                    settings.text(.workspaceName),
+                                    text: Binding(
+                                        get: { store.workspace(id: workspace.id)?.name ?? workspace.name },
+                                        set: { _ = store.renameWorkspace(workspace.id, to: $0) }
+                                    )
+                                )
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13, weight: .semibold))
+                                HStack(spacing: 6) {
+                                    Text("\(store.notes.filter { $0.workspaceID == workspace.id }.count)")
+                                    if workspace.id == store.defaultWorkspaceID {
+                                        Text(settings.language == .english ? "Default" : "默认")
+                                    }
+                                    if workspace.id == store.activeWorkspaceID {
+                                        Text(settings.language == .english ? "Current" : "当前")
+                                    }
+                                }
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+                            Button { store.moveWorkspace(workspace.id, to: index - 1) } label: {
+                                Image(systemName: "chevron.up")
+                            }
+                            .disabled(index == 0)
+                            .frame(width: 26, height: 26)
+                            .dockNotesGlass(in: Circle(), tint: Color.white.opacity(0.04), interactive: true)
+                            Button { store.moveWorkspace(workspace.id, to: index + 1) } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .disabled(index == store.workspaces.count - 1)
+                            .frame(width: 26, height: 26)
+                            .dockNotesGlass(in: Circle(), tint: Color.white.opacity(0.04), interactive: true)
+                            Button(role: .destructive) {
+                                workspacePendingDeletion = workspace
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(workspace.id == store.defaultWorkspaceID
+                                        ? Color.secondary
+                                        : Color.red.opacity(0.82))
+                            }
+                            .disabled(workspace.id == store.defaultWorkspaceID)
+                            .frame(width: 26, height: 26)
+                            .dockNotesGlass(in: Circle(), tint: Color.red.opacity(0.05), interactive: true)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .frame(height: 66)
+                        .background {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(hex: workspace.colorHex).opacity(
+                                    workspace.id == store.activeWorkspaceID ? 0.15 : 0.055
+                                ))
+                                .dockNotesGlassPanel(
+                                    radius: 12,
+                                    tint: Color(hex: workspace.colorHex).opacity(0.08),
+                                    clear: true,
+                                    fallbackOpacity: 0.17
+                                )
+                        }
+                    }
+                }
+                .padding(16)
+            }
+
+            Divider()
+            HStack {
+                if store.latestPendingWorkspaceDeletion != nil {
+                    Text(settings.text(.workspaceDeleted))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Button(settings.text(.undo)) { store.undoLatestWorkspaceDeletion() }
+                }
+                Spacer()
+                Button {
+                    let baseName = settings.language == .english ? "Workspace" : "工作区"
+                    _ = store.createWorkspace(
+                        name: "\(baseName) \(store.workspaces.count + 1)",
+                        makeActive: false
+                    )
+                } label: {
+                    Label(settings.text(.newWorkspace), systemImage: "plus")
+                }
+                .dockNotesChromeButton()
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.07), interactive: true)
+            }
+            .padding(16)
+            .background(Color.white.opacity(0.08))
+        }
+        .frame(width: size.width, height: size.height)
+        .background(DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[0].startHex)))
+        .alert(
+            workspacePendingDeletion.map {
+                settings.language == .english
+                    ? "Delete \($0.name)?"
+                    : "删除“\($0.name)”？"
+            } ?? settings.text(.delete),
+            isPresented: Binding(
+                get: { workspacePendingDeletion != nil },
+                set: { if !$0 { workspacePendingDeletion = nil } }
+            )
+        ) {
+            Button(settings.text(.cancel), role: .cancel) { workspacePendingDeletion = nil }
+            Button(settings.text(.delete), role: .destructive) {
+                if let workspacePendingDeletion {
+                    _ = store.deleteWorkspace(workspacePendingDeletion.id)
+                }
+                workspacePendingDeletion = nil
+            }
+        } message: {
+            Text(settings.language == .english
+                ? "Its notes will move to the default workspace and can be restored with Undo."
+                : "其中的便签会移到默认工作区，并可通过“撤销”恢复。")
+        }
+    }
 }
 
 struct SettingsWindowView: View {
     private enum Section: String, CaseIterable {
         case appearance
+        case reminders
         case ai
         case archive
     }
 
     @ObservedObject var store: NotesStore
     @ObservedObject var settings: AppSettings
+    @ObservedObject var reminders: ReminderCoordinator
+    @ObservedObject var calendarSync: CalendarSyncCoordinator
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selection: Section = .appearance
     @State private var aiProviderDraft: AIProvider = .openAICompatible
     @State private var aiEndpointDraft = ""
     @State private var aiModelDraft = ""
     @State private var aiAPIKeyDraft = ""
     @State private var aiSaveResult: Bool?
+    @State private var dailySummaryTimeDraft = ""
+    @State private var dailySummaryTimeInvalid = false
 
     var body: some View {
         HStack(spacing: 0) {
             settingsSidebar
 
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                LinearGradient(
-                    colors: [
-                        Color(hex: NotePalette.gradients[0].startHex).opacity(0.08),
-                        Color.clear,
-                        Color(hex: NotePalette.gradients[1].endHex).opacity(0.055)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-
-                ScrollView {
-                    Group {
-                        switch selection {
-                        case .appearance: appearanceSettings
-                        case .ai: aiSettings
-                        case .archive: archiveSettings
-                        }
+            ScrollView {
+                Group {
+                    switch selection {
+                    case .appearance: appearanceSettings
+                    case .reminders: reminderSettings
+                    case .ai: aiSettings
+                    case .archive: archiveSettings
                     }
-                    .padding(30)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .padding(30)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(width: 760, height: 560)
-        .onAppear { loadAIDraft(provider: settings.aiProvider) }
+        .background {
+            DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[0].startHex))
+                .overlay {
+                    if colorScheme == .dark {
+                        Color.black.opacity(0.24).allowsHitTesting(false)
+                    }
+                }
+        }
+        .background {
+            if !DockNotesGlassRuntime.isStaticRendering {
+                DockNotesGlassWindowChrome(
+                    backgroundColor: colorScheme == .dark
+                        ? NSColor(deviceWhite: 0.11, alpha: 0.78)
+                        : NSColor(deviceWhite: 1, alpha: 0.30)
+                )
+                .frame(width: 0, height: 0)
+            }
+        }
+        .onAppear {
+            loadAIDraft(provider: settings.aiProvider)
+            dailySummaryTimeDraft = ReminderTimeInput.format(dailySummaryDateBinding.wrappedValue)
+            reminders.syncNow()
+            calendarSync.refreshPermissionAndCalendars()
+        }
     }
 
     private var settingsSidebar: some View {
@@ -2484,6 +4420,12 @@ struct SettingsWindowView: View {
                     gradient: NotePalette.gradients[0].swiftUIGradient
                 )
                 sidebarButton(
+                    .reminders,
+                    symbol: "bell.badge",
+                    title: settings.text(.reminders),
+                    gradient: NotePalette.gradients[3].swiftUIGradient
+                )
+                sidebarButton(
                     .ai,
                     symbol: "sparkles",
                     title: settings.text(.ai),
@@ -2509,13 +4451,13 @@ struct SettingsWindowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .frame(height: 38)
-                    .background(Color.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 10))
+                    .dockNotesGlassPanel(radius: 10, tint: Color.white.opacity(0.04), interactive: true)
             }
             .dockNotesChromeButton()
             .padding(12)
         }
         .frame(width: 188)
-        .background(.ultraThinMaterial)
+        .background(Color.white.opacity(0.09))
         .overlay(alignment: .trailing) { Divider() }
     }
 
@@ -2555,6 +4497,12 @@ struct SettingsWindowView: View {
                         .shadow(color: Color.black.opacity(0.08), radius: 4, y: 2)
                 }
             }
+            .dockNotesGlassPanel(
+                radius: 12,
+                tint: selection == section ? Color.white.opacity(0.08) : Color.white.opacity(0.02),
+                interactive: true,
+                fallbackOpacity: selection == section ? 0.24 : 0.10
+            )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .dockNotesChromeButton()
@@ -2573,6 +4521,20 @@ struct SettingsWindowView: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(width: 292)
+                }
+                settingLine(
+                    title: settings.text(.quickCaptureShortcut),
+                    detail: settings.quickCaptureShortcutRegistrationFailed
+                        ? settings.text(.shortcutConflict)
+                        : settings.text(.quickCaptureHint)
+                ) {
+                    Picker("", selection: $settings.quickCaptureShortcut) {
+                        ForEach(QuickCaptureShortcut.allCases) { shortcut in
+                            Text(shortcut.displayName).tag(shortcut)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 160)
                 }
             }
 
@@ -2595,7 +4557,10 @@ struct SettingsWindowView: View {
                     .fixedSize()
                 }
                 settingLine(title: settings.text(.deckBehavior)) {
-                    Toggle(settings.text(.keepDeckOpen), isOn: $settings.keepDeckOpen)
+                    Toggle(settings.text(.keepDeckOpen), isOn: Binding(
+                        get: { !settings.keepDeckOpen },
+                        set: { settings.keepDeckOpen = !$0 }
+                    ))
                         .toggleStyle(.switch)
                         .labelsHidden()
                 }
@@ -2645,8 +4610,7 @@ struct SettingsWindowView: View {
                             .font(.system(size: 11).monospaced())
                             .padding(.horizontal, 10)
                             .frame(height: 32)
-                            .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 0.6) }
+                            .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04), interactive: true)
                         Button(settings.text(.restoreDefault)) { aiEndpointDraft = aiProviderDraft.defaultEndpoint }
                             .font(.system(size: 10, weight: .medium))
                     }
@@ -2665,13 +4629,12 @@ struct SettingsWindowView: View {
                                 .foregroundStyle(Color.black.opacity(0.70))
                                 .padding(.horizontal, 10)
                                 .frame(height: 28)
-                                .background(
-                                    aiModelDraft == model
-                                        ? Color(hex: NotePalette.gradients[0].startHex).opacity(0.54)
-                                        : Color.white.opacity(0.52),
-                                    in: Capsule()
+                                .dockNotesGlassCapsule(
+                                    tint: aiModelDraft == model
+                                        ? Color(hex: NotePalette.gradients[0].startHex).opacity(0.18)
+                                        : Color.white.opacity(0.04),
+                                    interactive: true
                                 )
-                                .overlay { Capsule().stroke(Color.white.opacity(0.72), lineWidth: 0.6) }
                         }
                         .dockNotesChromeButton()
                     }
@@ -2681,8 +4644,7 @@ struct SettingsWindowView: View {
                     .font(.system(size: 12).monospaced())
                     .padding(.horizontal, 11)
                     .frame(height: 34)
-                    .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 0.6) }
+                    .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04), interactive: true)
             }
 
             settingsCard(title: settings.text(.aiAPIKey), symbol: "key.fill", gradient: NotePalette.gradients[1].swiftUIGradient) {
@@ -2691,8 +4653,7 @@ struct SettingsWindowView: View {
                     .font(.system(size: 12).monospaced())
                     .padding(.horizontal, 11)
                     .frame(height: 34)
-                    .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08), lineWidth: 0.6) }
+                    .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04), interactive: true)
 
                 HStack(spacing: 9) {
                     Label(settings.text(.aiAPIKeyHint), systemImage: "lock.shield.fill")
@@ -2715,6 +4676,289 @@ struct SettingsWindowView: View {
                 }
             }
         }
+    }
+
+    private var reminderSettings: some View {
+        settingsPage(title: settings.text(.reminders), subtitle: settings.text(.reminderSettingsHint)) {
+            settingsCard(
+                title: settings.text(.notificationPermission),
+                symbol: "bell.badge.fill",
+                gradient: NotePalette.gradients[3].swiftUIGradient
+            ) {
+                settingLine(title: settings.text(.notificationPermission)) {
+                    HStack(spacing: 9) {
+                        Circle()
+                            .fill(permissionColor)
+                            .frame(width: 8, height: 8)
+                        Text(permissionText)
+                            .font(.system(size: 11, weight: .semibold))
+                        if reminders.permissionState == .allowed {
+                            Text(String(
+                                format: settings.text(.scheduledNotifications),
+                                reminders.scheduledRequestCount
+                            ))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if reminders.permissionState == .notRequested {
+                    Button(settings.text(.enableNotifications)) { reminders.requestPermission() }
+                        .buttonStyle(.borderedProminent)
+                } else if reminders.permissionState == .denied {
+                    Button(settings.text(.openNotificationSettings)) {
+                        reminders.openSystemNotificationSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+
+            settingsCard(
+                title: settings.text(.taskReminders),
+                symbol: "checklist.checked",
+                gradient: NotePalette.gradients[0].swiftUIGradient
+            ) {
+                settingLine(title: settings.text(.taskReminders), detail: settings.text(.taskRemindersHint)) {
+                    Toggle("", isOn: $settings.taskRemindersEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+            }
+
+            settingsCard(
+                title: calendarText("系统日历", "System Calendar"),
+                symbol: "calendar.badge.clock",
+                gradient: NotePalette.gradients[2].swiftUIGradient
+            ) {
+                settingLine(
+                    title: calendarText("日历权限", "Calendar access"),
+                    detail: calendarText(
+                        "DockNotes 是任务主数据源；日历只显示带日期的任务。",
+                        "DockNotes remains the task source; Calendar displays dated tasks."
+                    )
+                ) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(calendarPermissionColor)
+                            .frame(width: 8, height: 8)
+                        Text(calendarPermissionText)
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+
+                if calendarSync.permissionState == .notRequested {
+                    Button(calendarText("允许访问并创建专用日历", "Allow access and create calendar")) {
+                        calendarSync.requestPermission()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if calendarSync.permissionState == .denied
+                            || calendarSync.permissionState == .restricted {
+                    Button(calendarText("打开系统日历权限设置", "Open Calendar privacy settings")) {
+                        calendarSync.openSystemCalendarSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                settingLine(
+                    title: calendarText("同步到系统日历", "Sync to Calendar"),
+                    detail: calendarText("默认关闭；开启后自动保持任务与事件一致。", "Off by default; keeps task events in sync when enabled.")
+                ) {
+                    Toggle("", isOn: $settings.calendarSyncEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .disabled(
+                            calendarSync.permissionState != .allowed
+                                && !settings.calendarSyncEnabled
+                        )
+                }
+
+                if calendarSync.permissionState == .allowed {
+                    settingLine(title: calendarText("目标日历", "Target calendar")) {
+                        HStack(spacing: 8) {
+                            Picker("", selection: Binding(
+                                get: { settings.calendarIdentifier ?? "" },
+                                set: { settings.calendarIdentifier = $0.isEmpty ? nil : $0 }
+                            )) {
+                                Text(calendarText("请选择", "Choose…")).tag("")
+                                ForEach(calendarSync.calendars) { calendar in
+                                    Text("\(calendar.title) · \(calendar.sourceTitle)").tag(calendar.id)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 235)
+                            Button(calendarText("创建 DockNotes 日历", "Create DockNotes calendar")) {
+                                calendarSync.createDockNotesCalendar()
+                            }
+                            .font(.system(size: 10, weight: .semibold))
+                        }
+                    }
+
+                    HStack(spacing: 9) {
+                        Button(calendarText("立即同步", "Sync now")) { calendarSync.syncNow() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!settings.calendarSyncEnabled || settings.calendarIdentifier == nil)
+                        Button(calendarText("重建受管事件", "Rebuild managed events")) { calendarSync.rebuild() }
+                            .buttonStyle(.bordered)
+                            .disabled(!settings.calendarSyncEnabled || settings.calendarIdentifier == nil)
+                        Spacer()
+                        Text(String(
+                            format: calendarText("已同步 %d 个事件", "%d events synced"),
+                            calendarSync.synchronizedEventCount
+                        ))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !calendarSync.statusMessage.isEmpty {
+                    Label(calendarSync.statusMessage, systemImage: calendarSync.conflicts.isEmpty ? "checkmark.circle" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(calendarSync.conflicts.isEmpty ? Color.secondary : Color.orange)
+                }
+
+                ForEach(calendarSync.conflicts) { conflict in
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label(
+                            conflict.kind == .deleted
+                                ? calendarText("事件已在系统日历中删除", "Event was deleted in Calendar")
+                                : calendarText("事件已在系统日历中修改", "Event was changed in Calendar"),
+                            systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+                        )
+                        .font(.system(size: 11, weight: .semibold))
+                        Text(conflict.localTitle)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Button(calendarText("重新同步", "Resync")) {
+                                calendarSync.resolveByResyncing(conflict)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button(calendarText("采用日历更改", "Use Calendar change")) {
+                                calendarSync.resolveByAdoptingCalendar(conflict)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+
+            settingsCard(
+                title: settings.text(.dailySummary),
+                symbol: "sunrise.fill",
+                gradient: NotePalette.gradients[1].swiftUIGradient
+            ) {
+                settingLine(title: settings.text(.dailySummary), detail: settings.text(.dailySummaryHint)) {
+                    Toggle("", isOn: $settings.dailySummaryEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                settingLine(title: settings.text(.dailySummaryTime)) {
+                    HStack(spacing: 8) {
+                        DatePicker("", selection: dailySummaryDateBinding, displayedComponents: .hourAndMinute)
+                            .labelsHidden()
+                            .disabled(!settings.dailySummaryEnabled)
+                        TextField(settings.text(.timeInputHint), text: $dailySummaryTimeDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11).monospacedDigit())
+                            .padding(.horizontal, 9)
+                            .frame(width: 112, height: 30)
+                            .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04), interactive: true)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(dailySummaryTimeInvalid ? Color.red.opacity(0.8) : Color.black.opacity(0.08), lineWidth: 0.8)
+                            }
+                            .disabled(!settings.dailySummaryEnabled)
+                            .onSubmit { applyDailySummaryTimeDraft() }
+                    }
+                }
+                if dailySummaryTimeInvalid {
+                    Label(settings.text(.invalidTime), systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    private var dailySummaryDateBinding: Binding<Date> {
+        Binding(
+            get: {
+                let minutes = AppSettings.clampDailySummaryMinutes(settings.dailySummaryMinutes)
+                return Calendar.current.date(
+                    bySettingHour: minutes / 60,
+                    minute: minutes % 60,
+                    second: 0,
+                    of: Date()
+                ) ?? Date()
+            },
+            set: { date in
+                let calendar = Calendar.current
+                settings.dailySummaryMinutes = calendar.component(.hour, from: date) * 60
+                    + calendar.component(.minute, from: date)
+                dailySummaryTimeDraft = ReminderTimeInput.format(date, calendar: calendar)
+                dailySummaryTimeInvalid = false
+            }
+        )
+    }
+
+    private var permissionText: String {
+        switch reminders.permissionState {
+        case .allowed: settings.text(.notificationsAllowed)
+        case .denied: settings.text(.notificationsDenied)
+        case .notRequested: settings.text(.notificationsNotRequested)
+        case .unknown: settings.text(.notificationsUnknown)
+        }
+    }
+
+    private var permissionColor: Color {
+        switch reminders.permissionState {
+        case .allowed: .green
+        case .denied: .red
+        case .notRequested: .orange
+        case .unknown: .secondary
+        }
+    }
+
+    private var calendarPermissionText: String {
+        switch calendarSync.permissionState {
+        case .allowed: calendarText("已允许", "Allowed")
+        case .denied: calendarText("已拒绝", "Denied")
+        case .restricted: calendarText("受系统限制", "Restricted")
+        case .notRequested: calendarText("尚未请求", "Not requested")
+        case .unknown: calendarText("未知", "Unknown")
+        }
+    }
+
+    private var calendarPermissionColor: Color {
+        switch calendarSync.permissionState {
+        case .allowed: .green
+        case .denied, .restricted: .red
+        case .notRequested: .orange
+        case .unknown: .secondary
+        }
+    }
+
+    private func calendarText(_ chinese: String, _ english: String) -> String {
+        switch settings.language {
+        case .english: english
+        case .simplifiedChinese: chinese
+        case .system: Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese : english
+        }
+    }
+
+    private func applyDailySummaryTimeDraft() {
+        guard let date = ReminderTimeInput.parse(dailySummaryTimeDraft, on: Date()) else {
+            dailySummaryTimeInvalid = true
+            return
+        }
+        let calendar = Calendar.current
+        settings.dailySummaryMinutes = calendar.component(.hour, from: date) * 60
+            + calendar.component(.minute, from: date)
+        dailySummaryTimeDraft = ReminderTimeInput.format(date, calendar: calendar)
+        dailySummaryTimeInvalid = false
     }
 
     private var archiveSettings: some View {
@@ -2759,18 +5003,31 @@ struct SettingsWindowView: View {
         aiProviderDraft = provider
         aiEndpointDraft = settings.storedAIEndpoint(for: provider)
         aiModelDraft = settings.storedAIModel(for: provider)
-        aiAPIKeyDraft = settings.storedAIAPIKey(for: provider)
+        let initialKey = settings.storedAIAPIKey(for: provider)
+        aiAPIKeyDraft = initialKey
         aiSaveResult = nil
+        Task {
+            let loadedKey = await settings.loadAIAPIKey(for: provider)
+            guard aiProviderDraft == provider, aiAPIKeyDraft == initialKey else { return }
+            aiAPIKeyDraft = loadedKey
+        }
     }
 
     private func saveAIConfiguration() {
-        withAnimation(.easeOut(duration: 0.18)) {
-            aiSaveResult = settings.saveAIConfiguration(
-                provider: aiProviderDraft,
-                endpoint: aiEndpointDraft,
-                model: aiModelDraft,
-                apiKey: aiAPIKeyDraft
+        let provider = aiProviderDraft
+        let endpoint = aiEndpointDraft
+        let model = aiModelDraft
+        let apiKey = aiAPIKeyDraft
+        Task {
+            let saved = await settings.saveAIConfiguration(
+                provider: provider,
+                endpoint: endpoint,
+                model: model,
+                apiKey: apiKey
             )
+            withAnimation(.easeOut(duration: 0.18)) {
+                aiSaveResult = saved
+            }
         }
     }
 
@@ -2836,13 +5093,13 @@ struct SettingsWindowView: View {
             content()
         }
         .padding(16)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .background(Color.white.opacity(0.36), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .dockNotesGlassPanel(radius: 16, tint: Color.white.opacity(0.04), clear: true)
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.72), lineWidth: 0.7)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.62), lineWidth: 0.75)
+                .allowsHitTesting(false)
         }
-        .shadow(color: Color.black.opacity(0.055), radius: 7, y: 3)
+        .shadow(color: Color.black.opacity(0.07), radius: 10, y: 4)
     }
 
     private func settingLine<Content: View>(

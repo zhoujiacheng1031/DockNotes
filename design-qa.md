@@ -1,60 +1,69 @@
-# DockNotes Stacked Edge Tabs — Design QA
+# DockNotes Clear Prism — 修正后的视觉验收
 
 ## Evidence
 
-- Source visual truth: `/private/var/folders/5y/z4zf9kqs7q9b6r0dxj3t00840000gn/T/codex-clipboard-6efddc85-7bc4-4bf2-bd0a-23907547631b.png`
-- Final implementation capture: `/private/tmp/docknotes-stacked-deck-final4.png`
-- Combined comparison: `/private/tmp/docknotes-design-comparison-final-v2.png`
-- State: expanded right-edge deck, light appearance, four visible notes plus overflow and utility controls.
-- Source pixels: 106 × 810; source density is unknown and was normalized to 105 × 800 for comparison.
-- Implementation pixels: 120 × 1600, representing a 60 × 800 point SwiftUI surface rendered at 2×; normalized to 60 × 800.
-- Viewport: `DeckWindowView`, 60 × 800 points.
+- 选定的设计方向：`/Users/zhoujiacheng/.codex/generated_images/01a0a909-9fc9-7043-ad3e-95b15e26b69a/exec-d1ea8b1d-ae59-40d6-9eb2-213c56dcb22f.png`（1487 × 1058，生成图，密度未知）。
+- 用户报告的侧边标签缺陷：`/var/folders/5y/z4zf9kqs7q9b6r0dxj3t00840000gn/T/codex-clipboard-14f4b044-6ed1-45af-a275-cc3bebcc914f.png`（132 × 2110）。
+- 修正后展开便签：`/private/tmp/docknotes-glass-after-note-verified.png`（1800 × 1200；SwiftUI 900 × 600 pt，2×）。
+- 修正后侧边标签：`/private/tmp/docknotes-glass-after-deck-verified.png`（120 × 1800；SwiftUI 60 × 900 pt，2×）。
+- 状态：浅色外观、展开便签与 AI 抽屉、右侧展开标签栏；设置窗口的“外观”和“AI 模型”页另在已重启的 Release 应用中实机观察。
+- 归一化：设计概念与应用预览的纵横比、内容和屏幕背景不同，只比较对应的便签、抽屉及标签区域；用户截图与侧栏预览的标签数和高度不同，只比较单张标签的轮廓及层数，不作逐像素位置匹配。
 
-## Full-view comparison evidence
+## Findings and comparison history
 
-The final side-by-side comparison shows that both designs use a roughly 48-point paper strip, long vertical titles, rounded free-edge corners, a flush screen edge, soft shadow, and small alternating angles. DockNotes intentionally shows four notes and its existing overflow/add/library/settings controls, while the reference crop shows three notes and only part of an add control.
+### 迭代 1：blocked
 
-## Focused region evidence
+- [P1] 侧边标签在用户截图中有明显错位的双层轮廓。原因是渐变形状、描边、阴影与系统玻璃各画了一层。修复：玻璃放进同一个 `TuckyTabShape` 背景，删去重复描边、旧纸张缝线，并压低倾斜与阴影。
+- [P1] 展开便签的实色渐变覆盖了玻璃。修复：保留原调色板，但以原生玻璃作底层，渐变改为半透明颜色层，并只加一条高光边线。
+- [P1] 设置页原先只有菜单项像玻璃，整页仍是灰白不透明背景。修复：移除内容区的窗口色背景，在窗口根视图加玻璃底板、渐变光晕及透明窗口背景；AI、提醒、归档与便签库沿用同一画布。
 
-The full implementation capture is already a focused component-only capture at 2× density. Titles, deadline capsules, seams, corners, shadows, and overlap boundaries are legible at original size, so a second crop would not add evidence.
+### 迭代 2：blocked
 
-## Comparison history
+- [P2] 首次实机截图中的整页玻璃过于白，仍像普通设置窗口。修复：加重底板的蓝、奶油黄、桃色与淡紫色光晕，并让设置卡片透出底板颜色。修正后的实机截图中，左侧导航、内容区及 AI 页均显现连续的渐变玻璃底色。
 
-### Iteration 1 — blocked
+### 前次迭代：passed
 
-- [P1] The first implementation used 48 × 126 point tabs with a fixed 96-point pitch. In the normalized comparison they read as short cards rather than the reference's long paper labels.
-- [P1] Icon, title, and deadline shared too little length, causing early title truncation.
-- Fix: increased the visible label to 48 × 190 points and introduced an adaptive pitch: four labels retain airy spacing while five to seven labels compress into a denser stack without shrinking the labels.
-
-### Iteration 2 — blocked
-
-- [P2] Several gradient endpoints were darker and more saturated than the pastel reference, reducing title contrast.
-- [P2] SwiftUI's semantic black resolved inconsistently in the offscreen render on rotated labels.
-- Fix: added a restrained white wash to the existing user-selected gradient, increased the free-edge radius, and used device-space AppKit ink color for deterministic dark typography.
-
-### Final iteration
-
-- No actionable P0, P1, or P2 mismatch remains.
-- Remaining P3: the reference uses a more condensed handwritten display face. DockNotes retains the rounded system font for Chinese/English consistency and reliable truncation.
-- Intentional deviation: DockNotes retains compact deadline capsules because reminders are an existing product requirement absent from the visual reference. Decorative classification icons were removed to match the reference and preserve title length.
+- 用户截图与修正后侧栏预览在同一次视觉比较中检查；双层错位轮廓已消失。专门的像素回归检查显示，标签外侧采样 alpha 从修复前 0.392 降至 0.075，内部保持 1.000。
+- 设计方向图与修正后便签预览在同一次视觉比较中检查。两者保留大面积柔和渐变、明亮玻璃边缘、深色可读文字和内嵌 AI 区；现有彩色书脊、完整工具栏是有意保留的产品功能。
+- macOS 26 实机设置窗口的“外观”与“AI 模型”页面已核对：整页背景连续、卡片与表单浮于其上。非激活式侧栏窗口没有被当前 UI 截图工具稳定捕获；对它使用同版构建的离屏预览和像素回归测试，不把这项限制误报成实机截图验证。
 
 ## Required fidelity surfaces
 
-- Fonts and typography: vertical orientation, weight, size, one-line truncation, and dark ink now match the reference hierarchy. The exact display family remains a documented P3 deviation.
-- Spacing and layout rhythm: 48-point width, 190-point length, adaptive overlap, alternating 0.9–2 degree tilt, rounded free edge, seam, and control clearance pass.
-- Colors and visual tokens: existing note gradients remain user-controlled but receive a light paper wash for the reference's pastel character and readable black text.
-- Image quality and asset fidelity: the source contains no raster illustration, logo, or custom icon asset. Native SF Symbols are retained for functional app controls; no placeholder imagery is used.
-- Copy and content: real note titles, localized deadline values, overflow count, and existing actions remain intact. Four-tab and seven-tab live states both keep titles in the exposed part of each stacked label.
+- 字体与排版：保留 SF 系统字、粗体标题与可读的纵排标签。侧栏与设计图文字内容不同，但层级和截断方向一致。
+- 间距与节奏：修正后标签仍采用原有叠放布局，但每张卡只剩一层边界；便签内部工具栏、AI 区与正文没有因材质调整而移位。
+- 颜色与视觉 token：使用原便签渐变调色板，玻璃负责折射/模糊，半透明渐变负责色彩。设置页采用相同的蓝—暖色系，而非独立的灰色页面。
+- 图像与资源：目标没有必须匹配的外部图片或标志；功能图标仍使用原生 SF Symbols，没有用占位符或手绘近似图替换。
+- 文案与内容：中英文设置文案及便签真实内容未由视觉修正改写；预览采用代表性中文便签内容。
+- 交互与可访问性：本次仅调整视觉背景、边缘与窗口材质；按钮、编辑器、书脊与顶部拖动区域保持原有交互。缩小动效/不同桌面壁纸下的实机折射强度仍可作为后续人工检查。
 
-## Interaction verification
+## Verification
 
-- Dynamic pitch is shared by slot positioning, drag targeting, adjacent-tab preview motion, and drop settling.
-- Self-checks cover four-tab defaults, seven-tab capacity, alternating tilt, stack height, drag target bounds, and residual drop positioning.
-- The live seven-tab state was expanded in the packaged application and verified to keep each label's title in its visible segment while retaining deadline display.
-- The application builds successfully and all DockNotes self-checks pass.
+- Debug 与签名 Release 构建成功；内置 `--self-test` 由 LaunchServices 运行完成；`codesign --verify --deep --strict` 通过。
+- 当前只有一份新构建的 DockNotes 进程运行。
+- `macOS/scripts/check-deck-glass.swift` 对修正后预览通过；该检查专门防止标签外侧重新出现重影。
 
 ## Follow-up polish
 
-- P3: consider an optional condensed display font for edge labels if a future typography pass can preserve CJK and English coverage.
+- [P3] 根据不同深浅桌面壁纸微调玻璃折射和渐变浓度；设计预览使用浅色背景，尚未逐一人工观察所有壁纸。
 
-final result: passed
+## 本次续验（设置拖动、侧栏、任务中心、管理工作区）
+
+- [P1] 设置窗口的 Glass 根视图不再拦截点击；SwiftUI 窗口 chrome 和自建设置窗口均启用背景拖动。新增窗口属性回归检查，验证玻璃窗口仍保有透明标题栏及背景拖动区域。桌面自动化的坐标拖动持续返回 `noWindowsAvailable`，本次结束时 Mac 已锁定，未能亲手完成窗口位移验收。
+- [P2] 侧边标签保留原来的渐变，降低实色覆盖并提高系统 Glass 透出比例；最终离屏预览为 `/private/tmp/docknotes-deck-final.png`（120 × 1800），与用户的重叠轮廓截图在同一轮比较。标签外侧 alpha 0.059、内侧 1.000，重影测试通过。离屏预览不呈现桌面后方的实时折射，原生玻璃强度仍需解锁后在真实桌面观察。
+- [P2] 任务中心去掉侧栏整块玻璃造成的多余边缘，仅保留连续画布和笔直分隔线。前后离屏图 `/private/tmp/docknotes-task-before.png`、`/private/tmp/docknotes-task-after2.png` 已比较；锁屏前实机任务中心截图也显示直线分隔、任务列表无遮挡。
+- [P2] “管理工作区”采用与便签库一致的蓝—暖色 Glass 底板、半透明工作区卡片及玻璃按钮。前后离屏图 `/private/tmp/docknotes-workspace-before.png`、`/private/tmp/docknotes-workspace-after2.png` 已比较；离屏滚动容器不绘制工作区行，但锁屏前的实机弹层可见全部三个工作区卡片，未见裁切。
+- 最新签名 Release 构建成功；`--self-test` 全部通过；`--self-test-interactions` 通过；`codesign --verify --deep --strict` 和 `git diff --check` 通过。自测中已将一条固定的标签溢出数量断言改为按布局高度验证。
+
+### 解锁后的复验与修正
+
+- 用户在真实桌面确认：旧版设置标题栏仍无法移动，展开标签仍偏像纸片；因此上一轮的窗口属性检查及离屏预览不足以判定这两项通过。
+- 设置菜单的复现检查先得到 `FAIL: app menu opens the duplicate SwiftUI Settings scene`；菜单命令改为统一打开应用自建设置窗口后，复测得到 `PASS: app-managed Settings window`。其后又为该窗口的顶部标题栏装入宽幅命中区域，并增加拖动事件回归：修正前 `Self-check failed: dragging the settings titlebar actually changes the window position`，修正后完整自测通过。测试还验证标题栏中心点击会命中拖动区域。自动化的桌面坐标点击/拖动没有可靠送达目标窗口，因此这不冒充真人鼠标拖动通过。
+- 侧栏玻璃的前景效果此前画在渐变背后，被纸面色层遮挡。本轮把原生 `glassEffect` 作用于整张标签（含渐变和内容），使用系统常规 Glass，并将渐变实色覆盖从 0.27 降至 0.18。选定概念图、上一版 `/private/tmp/docknotes-deck-final.png` 与最终 Release 离屏图 `/private/tmp/docknotes-deck-release-final.png` 在同一轮比较；后者保持渐变、文字与单层轮廓。像素检查得到标签外侧 alpha 0.051、内侧 1.000。离屏渲染不含系统实际的桌面折射，故还不能凭该图宣称玻璃观感完全达到概念图。
+- 切换到自建设置窗口后曾出现白字落在过亮玻璃卡片上的对比度回退；最终 Release 为深色外观增加透光深色底板，并在实机设置页截图中复查标题、正文和控制项的可读性。
+- 最终 Release 已重新构建并启动；完整 `--self-test`、`--self-test-interactions`、签名校验、`git diff --check` 和侧栏轮廓像素检查均通过。测试过程中误触的“收起状态”透明度已恢复至原来的 78%。
+- 改用桌面控制的窗口相对坐标后，实机标题栏拖动可重复：窗口从 `(772, 183)` 移至 `(832, 223)`，第二次同样的拖动又移至 `(892, 263)`；每次都是预期的 `(60, 40)` 位移。通过 macOS 窗口列表读取了拖动前后的实际窗口坐标，不再只依靠程序内合成事件。
+- 同一份 Release 的侧栏已由桌面控制点击收起条实际展开，并取得展开态应用截图。单层轮廓与渐变色保持，但截图接口只截取侧栏窗口，透明区域合成在白色背景上，无法观察它对真实桌面内容的折射；在纯白背景下仍有偏纸片的观感，暂不判定玻璃质感达标。
+
+尚未通过的验收边界：新版侧栏在真实桌面背景前的通透感尚无可比较的合成屏幕证据，且白底窗口截图仍显偏平。设置标题栏的实机连续拖动已通过；侧栏质感不以构建或离屏预览代替使用验收。
+
+final result: blocked

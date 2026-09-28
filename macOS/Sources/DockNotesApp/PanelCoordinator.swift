@@ -13,6 +13,23 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     static let desktopWindowInitialSize = CGSize(width: 460, height: 380)
     static let desktopWindowMinimumSize = CGSize(width: 320, height: 260)
     static let desktopWindowMaximumSize = CGSize(width: 900, height: 720)
+    static let transparentWindowGlassMode: DockNotesGlassRenderingMode = .stableMaterial
+
+    static func workspaceManagementContentSize(for visibleFrame: NSRect) -> CGSize {
+        CGSize(
+            width: min(600, max(1, visibleFrame.width - 32)),
+            height: min(480, max(1, visibleFrame.height - 64))
+        )
+    }
+
+    static func workspaceManagementFrame(in visibleFrame: NSRect, windowSize: CGSize) -> NSRect {
+        NSRect(
+            x: visibleFrame.midX - windowSize.width / 2,
+            y: visibleFrame.midY - windowSize.height / 2,
+            width: windowSize.width,
+            height: windowSize.height
+        )
+    }
 
     static func desktopWindowLevel(isPinned: Bool) -> NSWindow.Level {
         isPinned ? .floating : .normal
@@ -34,16 +51,25 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         static let visibleDeckWidth: CGFloat = DeckLayout.windowWidth
         static let noteDeckGap: CGFloat = DeckLayout.windowWidth
         static let settingsSize = CGSize(width: 760, height: 560)
-        static let librarySize = CGSize(width: 680, height: 520)
+        static let librarySize = CGSize(width: 860, height: 560)
+        static let taskCenterSize = CGSize(width: 860, height: 560)
+        static let undoSize = CGSize(width: 356, height: 62)
+        static let quickCaptureSize = CGSize(width: 420, height: 245)
     }
 
     private let store: NotesStore
     private let settings: AppSettings
+    private let reminders: ReminderCoordinator
+    private let calendarSync: CalendarSyncCoordinator
     private let visibleFrameOverride: NSRect?
     private var notePanel: TransparentPanel?
     private var deckPanel: TransparentPanel?
     private var settingsWindow: NSWindow?
     private var libraryWindow: NSWindow?
+    private var workspaceManagementWindow: NSWindow?
+    private var taskCenterWindow: NSWindow?
+    private var undoPanel: TransparentPanel?
+    private var quickCaptureWindow: NSWindow?
     private var desktopNoteWindows: [DockNote.ID: NSWindow] = [:]
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
@@ -53,11 +79,20 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 
     var edgePanelFrameForTesting: NSRect? { deckPanel?.frame }
     var edgePanelContentViewForTesting: NSView? { deckPanel?.contentView }
+    var settingsWindowForTesting: NSWindow? { settingsWindow }
     private(set) var edgeInteractionRefreshMatchesCommittedEdgeForTesting = true
 
-    init(store: NotesStore, settings: AppSettings, visibleFrameOverride: NSRect? = nil) {
+    init(
+        store: NotesStore,
+        settings: AppSettings,
+        reminders: ReminderCoordinator? = nil,
+        calendarSync: CalendarSyncCoordinator? = nil,
+        visibleFrameOverride: NSRect? = nil
+    ) {
         self.store = store
         self.settings = settings
+        self.reminders = reminders ?? ReminderCoordinator(store: store, settings: settings)
+        self.calendarSync = calendarSync ?? CalendarSyncCoordinator(store: store, settings: settings)
         self.visibleFrameOverride = visibleFrameOverride
     }
 
@@ -73,10 +108,16 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         notePanel?.orderOut(nil)
         settingsWindow?.orderOut(nil)
         libraryWindow?.orderOut(nil)
+        workspaceManagementWindow?.orderOut(nil)
+        taskCenterWindow?.orderOut(nil)
+        undoPanel?.orderOut(nil)
+        quickCaptureWindow?.orderOut(nil)
         deckPanel?.orderFrontRegardless()
         if store.isExpanded { showNotePanel(animated: false) }
         if store.isPreferencesPresented { showSettingsWindow() }
         if store.isLibraryPresented { showLibraryWindow() }
+        if store.isWorkspaceManagementPresented { showWorkspaceManagementWindow() }
+        if store.isTaskCenterPresented { showTaskCenterWindow() }
     }
 
     func stop() {
@@ -89,6 +130,9 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         globalMouseMonitor = nil
         workspaceActivationObserver = nil
         cancellables.removeAll()
+        undoPanel?.orderOut(nil)
+        workspaceManagementWindow?.orderOut(nil)
+        quickCaptureWindow?.orderOut(nil)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -96,6 +140,12 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             store.isPreferencesPresented = false
         } else if let window = notification.object as? NSWindow, window === libraryWindow {
             store.isLibraryPresented = false
+        } else if let window = notification.object as? NSWindow, window === workspaceManagementWindow {
+            store.isWorkspaceManagementPresented = false
+        } else if let window = notification.object as? NSWindow, window === taskCenterWindow {
+            store.isTaskCenterPresented = false
+        } else if let window = notification.object as? NSWindow, window === quickCaptureWindow {
+            store.isQuickCapturePresented = false
         } else if let window = notification.object as? NSWindow,
                   let pair = desktopNoteWindows.first(where: { $0.value === window }) {
             desktopNoteWindows.removeValue(forKey: pair.key)
@@ -145,6 +195,14 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         notePanel?.level = Self.noteWindowLevel
         settingsWindow = makeSettingsWindow()
         libraryWindow = makeLibraryWindow()
+        workspaceManagementWindow = makeWorkspaceManagementWindow()
+        taskCenterWindow = makeTaskCenterWindow()
+        undoPanel = makeTransparentPanel(
+            size: Metrics.undoSize,
+            content: UndoDeletionBanner(store: store, settings: settings)
+        )
+        undoPanel?.level = NSWindow.Level(rawValue: Self.deckWindowLevel.rawValue + 1)
+        quickCaptureWindow = makeQuickCaptureWindow()
     }
 
     private func observePresentation() {
@@ -190,9 +248,54 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
+        store.$isWorkspaceManagementPresented
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] presented in
+                guard let self else { return }
+                presented ? self.showWorkspaceManagementWindow() : self.workspaceManagementWindow?.orderOut(nil)
+            }
+            .store(in: &cancellables)
+
+        store.$isTaskCenterPresented
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] presented in
+                guard let self else { return }
+                presented ? self.showTaskCenterWindow() : self.taskCenterWindow?.orderOut(nil)
+            }
+            .store(in: &cancellables)
+
+        store.$isQuickCapturePresented
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] presented in
+                guard let self else { return }
+                if presented {
+                    self.showQuickCaptureWindow()
+                } else {
+                    self.quickCaptureWindow?.orderOut(nil)
+                }
+            }
+            .store(in: &cancellables)
+
         store.$desktopNoteIDs
             .removeDuplicates()
             .sink { [weak self] ids in self?.syncDesktopNoteWindows(with: ids) }
+            .store(in: &cancellables)
+
+        store.$pendingDeletions
+            .map { !$0.isEmpty }
+            .removeDuplicates()
+            .sink { [weak self] presented in
+                guard let self else { return }
+                if presented {
+                    self.positionUndoPanel()
+                    self.undoPanel?.orderFrontRegardless()
+                } else {
+                    self.undoPanel?.orderOut(nil)
+                }
+            }
             .store(in: &cancellables)
 
         store.$notes
@@ -207,6 +310,9 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
                 guard let self else { return }
                 self.settingsWindow?.title = self.settings.text(.preferences)
                 self.libraryWindow?.title = self.settings.text(.library)
+                self.workspaceManagementWindow?.title = self.settings.text(.manageWorkspaces)
+                self.taskCenterWindow?.title = self.settings.text(.taskCenter)
+                self.quickCaptureWindow?.title = self.settings.text(.quickCapture)
             }
             .store(in: &cancellables)
 
@@ -229,7 +335,12 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func makeSettingsWindow() -> NSWindow {
-        let hostingView = NSHostingView(rootView: SettingsWindowView(store: store, settings: settings))
+        let hostingView = NSHostingView(rootView: SettingsWindowView(
+            store: store,
+            settings: settings,
+            reminders: reminders,
+            calendarSync: calendarSync
+        ))
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Metrics.settingsSize),
             styleMask: [.titled, .closable],
@@ -240,9 +351,20 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         window.contentView = hostingView
         window.level = .normal
         window.hidesOnDeactivate = false
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.delegate = self
+        if let titlebar = window.standardWindowButton(.closeButton)?.superview {
+            let dragHandle = SettingsTitlebarDragView(frame: NSRect(
+                x: 84,
+                y: 0,
+                width: max(0, titlebar.bounds.width - 96),
+                height: titlebar.bounds.height
+            ))
+            dragHandle.autoresizingMask = [.width, .height]
+            titlebar.addSubview(dragHandle, positioned: .above, relativeTo: nil)
+        }
         window.center()
         return window
     }
@@ -267,9 +389,75 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         return window
     }
 
+    private func makeWorkspaceManagementWindow() -> NSWindow {
+        let visible = visibleFrameOverride ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let size = Self.workspaceManagementContentSize(for: visible)
+        let hostingView = NSHostingView(rootView: WorkspaceManagementView(
+            store: store,
+            settings: settings,
+            size: size,
+            onClose: { [weak self] in self?.store.isWorkspaceManagementPresented = false }
+        ))
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = settings.text(.manageWorkspaces)
+        window.contentView = hostingView
+        window.level = NSWindow.Level(rawValue: Self.deckWindowLevel.rawValue + 1)
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.delegate = self
+        return window
+    }
+
+    private func makeTaskCenterWindow() -> NSWindow {
+        let hostingView = NSHostingView(rootView: TaskCenterView(store: store, settings: settings))
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Metrics.taskCenterSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = settings.text(.taskCenter)
+        window.contentView = hostingView
+        window.level = .normal
+        window.minSize = Metrics.taskCenterSize
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.delegate = self
+        window.center()
+        return window
+    }
+
+    private func makeQuickCaptureWindow() -> NSWindow {
+        let hostingView = NSHostingView(rootView: QuickCaptureView(store: store, settings: settings))
+        let window = NSPanel(
+            contentRect: NSRect(origin: .zero, size: Metrics.quickCaptureSize),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = settings.text(.quickCapture)
+        window.contentView = hostingView
+        window.level = .floating
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.delegate = self
+        window.center()
+        return window
+    }
+
     func makeDesktopNoteWindow(for noteID: DockNote.ID) -> NSWindow {
         let hostingView = TransparentHostingView(
             rootView: DesktopNoteWindowView(noteID: noteID, store: store, settings: settings)
+                .environment(\.dockNotesGlassRenderingMode, Self.transparentWindowGlassMode)
         )
         hostingView.sizingOptions = []
         let size = Self.desktopWindowInitialSize
@@ -351,7 +539,12 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func makeTransparentPanel<Content: View>(size: CGSize, content: Content) -> TransparentPanel {
-        let hostingView = TransparentHostingView(rootView: content)
+        // Liquid Glass's animated backdrop can leave rectangular copies when
+        // these borderless, transparent panels move or change opacity. Keep the
+        // same tinted glass design using the stable material renderer here.
+        let hostingView = TransparentHostingView(
+            rootView: content.environment(\.dockNotesGlassRenderingMode, Self.transparentWindowGlassMode)
+        )
         let panel = TransparentPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -410,6 +603,20 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         if refreshInteractions {
             refreshEdgeInteractions(expectedEdge: edge)
         }
+        positionUndoPanel(in: visible)
+    }
+
+    private func positionUndoPanel(in suppliedVisibleFrame: NSRect? = nil) {
+        guard let panel = undoPanel else { return }
+        let visible = suppliedVisibleFrame
+            ?? visibleFrameOverride
+            ?? deckPanel?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+        guard let visible else { return }
+        panel.setFrameOrigin(NSPoint(
+            x: visible.midX - panel.frame.width / 2,
+            y: visible.minY + 24
+        ))
     }
 
     private func refreshEdgeInteractions(expectedEdge: DeckEdge) {
@@ -510,12 +717,48 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         window.makeKey()
     }
 
+    private func showWorkspaceManagementWindow() {
+        guard let window = workspaceManagementWindow else { return }
+        let visible = visibleFrameOverride ?? deckPanel?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let size = Self.workspaceManagementContentSize(for: visible)
+        if let hostingView = window.contentView as? NSHostingView<WorkspaceManagementView> {
+            hostingView.rootView = WorkspaceManagementView(
+                store: store,
+                settings: settings,
+                size: size,
+                onClose: { [weak self] in self?.store.isWorkspaceManagementPresented = false }
+            )
+        }
+        let frameSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
+        window.setFrame(Self.workspaceManagementFrame(in: visible, windowSize: frameSize), display: true)
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKey()
+    }
+
+    private func showTaskCenterWindow() {
+        guard let window = taskCenterWindow else { return }
+        window.center()
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKey()
+    }
+
+    private func showQuickCaptureWindow() {
+        guard let window = quickCaptureWindow else { return }
+        window.center()
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKey()
+    }
+
     private func installOutsideClickMonitors() {
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp]
         ) { [weak self] event in
             if event.type == .leftMouseUp {
-                NotificationCenter.default.post(name: .dockNotesPointerReleased, object: nil)
+                NotificationCenter.default.post(name: .dockNotesPointerReleased, object: event)
             } else {
                 self?.handleLocalPointerDown(event)
             }
@@ -524,11 +767,12 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp]
         ) { [weak self] event in
+            let point = NSEvent.mouseLocation
             Task { @MainActor in
                 if event.type == .leftMouseUp {
                     NotificationCenter.default.post(name: .dockNotesPointerReleased, object: nil)
                 } else {
-                    self?.handlePointerDown(at: NSEvent.mouseLocation)
+                    self?.handlePointerDown(at: point)
                 }
             }
         }
@@ -543,7 +787,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   application.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
             Task { @MainActor in
-                self?.store.handleOutsideClick(keepDeckOpen: self?.settings.keepDeckOpen ?? true)
+                self?.handlePointerDown(at: NSEvent.mouseLocation)
             }
         }
     }
@@ -563,7 +807,8 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         // in that case; returning here keeps a label drag from being mistaken
         // for an outside click.
         guard let window = event.window else { return }
-        if window === settingsWindow || window === libraryWindow { return }
+        if window === settingsWindow || window === libraryWindow
+            || window === workspaceManagementWindow { return }
 
         // Local events already belong to DockNotes. This includes SwiftUI's
         // separate popover window used by More Notes, so it must not be treated
@@ -573,7 +818,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 
     private var visibleAppWindowFrames: [NSRect] {
         var frames: [NSRect] = []
-        for window in [settingsWindow, libraryWindow, notePanel, deckPanel] {
+        for window in [settingsWindow, libraryWindow, workspaceManagementWindow, taskCenterWindow, quickCaptureWindow, notePanel, deckPanel, undoPanel] {
             if let window, window.isVisible { frames.append(window.frame) }
         }
         for window in desktopNoteWindows.values where window.isVisible {
@@ -583,10 +828,11 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func handlePointerDown(at point: NSPoint) {
-        if settingsWindow?.isVisible == true, settingsWindow?.frame.contains(point) == true { return }
-        if libraryWindow?.isVisible == true, libraryWindow?.frame.contains(point) == true { return }
-        if notePanel?.isVisible == true, notePanel?.frame.contains(point) == true { return }
-        if deckPanel?.isVisible == true, deckPanel?.frame.contains(point) == true { return }
+        guard Self.localClickIsOutsideApp(
+            hasWindow: false,
+            point: point,
+            appWindowFrames: visibleAppWindowFrames
+        ) else { return }
         store.handleOutsideClick(keepDeckOpen: settings.keepDeckOpen)
     }
 }
@@ -594,6 +840,34 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 private final class TransparentPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+final class SettingsTitlebarDragView: NSView {
+    private var startingOrigin: NSPoint?
+    private var startingPointer: NSPoint?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        startingOrigin = window.frame.origin
+        startingPointer = window.convertPoint(toScreen: event.locationInWindow)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, let startingOrigin, let startingPointer else { return }
+        let pointer = window.convertPoint(toScreen: event.locationInWindow)
+        window.setFrameOrigin(NSPoint(
+            x: startingOrigin.x + pointer.x - startingPointer.x,
+            y: startingOrigin.y + pointer.y - startingPointer.y
+        ))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        startingOrigin = nil
+        startingPointer = nil
+    }
 }
 
 final class DesktopNoteWindow: NSWindow {

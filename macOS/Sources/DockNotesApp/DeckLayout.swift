@@ -12,7 +12,16 @@ enum DeckLayout {
     static let tabHeight: CGFloat = 92
     static let preferredTabPitch: CGFloat = 154
     static let tabVisualHeight: CGFloat = 190
-    static let controlsHeight: CGFloat = 150
+    static let controlButtonHeight: CGFloat = 29
+    static let controlSpacing: CGFloat = 7
+    static let controlTopPadding: CGFloat = 10
+    static let maximumControlCount = 4
+    static let newNoteCardHeight: CGFloat = 116
+    static let emptyDeckHeight: CGFloat = 132
+    /// Maximum expanded control stack: overflow, workspace, library, and the
+    /// secondary-actions menu, including spacing. New note lives in the paper
+    /// stack instead of competing with these utilities.
+    static var controlsHeight: CGFloat { controlStackHeight(count: maximumControlCount) }
     static let maximumVisibleTabs = 7
     static let defaultVisibleTabs = 4
     static let windowWidth: CGFloat = 60
@@ -24,15 +33,34 @@ enum DeckLayout {
 
     static var tabOverlap: CGFloat { tabVisualHeight - preferredTabPitch }
 
+    static func controlStackHeight(count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        return CGFloat(count) * controlButtonHeight
+            + CGFloat(count - 1) * controlSpacing
+            + controlTopPadding
+    }
+
     static func tabPitch(for availableHeight: CGFloat, slotCount: Int) -> CGFloat {
-        guard slotCount > 1 else { return preferredTabPitch }
-        let fitted = (availableHeight - controlsHeight - tabVisualHeight) / CGFloat(slotCount - 1)
+        guard slotCount > 0 else { return preferredTabPitch }
+        let addCardFit = (availableHeight - controlsHeight - newNoteCardHeight) / CGFloat(slotCount)
+        guard slotCount > 1 else {
+            return min(preferredTabPitch, max(tabHeight, addCardFit))
+        }
+        let noteStackFit = (availableHeight - controlsHeight - tabVisualHeight) / CGFloat(slotCount - 1)
+        let fitted = min(noteStackFit, addCardFit)
         return min(preferredTabPitch, max(tabHeight, fitted))
     }
 
     static func tabStackHeight(slotCount: Int, pitch: CGFloat) -> CGFloat {
         guard slotCount > 0 else { return 0 }
         return CGFloat(slotCount - 1) * pitch + tabVisualHeight
+    }
+
+    static func deckStackHeight(noteSlotCount: Int, pitch: CGFloat) -> CGFloat {
+        guard noteSlotCount > 0 else { return emptyDeckHeight }
+        let notesHeight = tabStackHeight(slotCount: noteSlotCount, pitch: pitch)
+        let addCardHeight = CGFloat(noteSlotCount) * pitch + newNoteCardHeight
+        return max(notesHeight, addCardHeight)
     }
 
     static func tiltDegrees(for slot: Int) -> Double {
@@ -77,9 +105,10 @@ enum DeckLayout {
 
     static func capacity(for availableHeight: CGFloat, preferredVisibleCount: Int = defaultVisibleTabs) -> Int {
         let preferred = min(max(preferredVisibleCount, 1), maximumVisibleTabs)
-        let availableSteps = max(0, availableHeight - controlsHeight - tabVisualHeight)
-        let feasible = Int(availableSteps / tabHeight) + 1
-        return min(preferred, max(1, feasible))
+        let feasible = (1...preferred).last { count in
+            deckStackHeight(noteSlotCount: count, pitch: tabHeight) + controlsHeight <= availableHeight
+        }
+        return feasible ?? 1
     }
 
     static func plan(
@@ -104,19 +133,31 @@ enum DeckLayout {
         for note in notes where slottedNotes.count < physicalSlotCount {
             slottedNotes.append(note)
             let hidden = excludedNoteIDs.contains(note.id)
-                || (isExpanded && note.id == activeNoteID)
             if !hidden { visibleCount += 1 }
             if visibleCount == desiredVisibleCount { break }
         }
+        // The note the user just worked on must return to the visible edge
+        // deck after the editor collapses. If it originally lived in More
+        // Notes, promote it into the last visible slot without mutating the
+        // user's canonical note order.
+        if let activeNote = notes.first(where: { $0.id == activeNoteID }),
+           !excludedNoteIDs.contains(activeNote.id),
+           !slottedNotes.contains(where: { $0.id == activeNote.id }) {
+            if slottedNotes.count < physicalSlotCount {
+                slottedNotes.append(activeNote)
+            } else if !slottedNotes.isEmpty {
+                slottedNotes[slottedNotes.count - 1] = activeNote
+            }
+        }
         let slots = slottedNotes.map { note -> UUID? in
             if excludedNoteIDs.contains(note.id) { return nil }
-            return isExpanded && note.id == activeNoteID ? nil : note.id
+            return note.id
         }
+        let slottedIDs = Set(slottedNotes.map(\.id))
         let overflowIDs = notes
-            .dropFirst(slottedNotes.count)
             .filter {
-                !excludedNoteIDs.contains($0.id)
-                    && !(isExpanded && $0.id == activeNoteID)
+                !slottedIDs.contains($0.id)
+                    && !excludedNoteIDs.contains($0.id)
             }
             .map(\.id)
         return DeckPlan(slots: slots, overflowIDs: overflowIDs)

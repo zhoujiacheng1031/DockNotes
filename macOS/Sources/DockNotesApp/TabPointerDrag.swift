@@ -10,20 +10,25 @@ enum TabPointerEvent: Equatable {
 struct TabPointerDragSession {
     private(set) var initialScreenY: CGFloat?
     private(set) var isDragging = false
+    private var maximumDistance: CGFloat = 0
     let minimumDistance: CGFloat
+    let clickTolerance: CGFloat
 
-    init(minimumDistance: CGFloat = 1) {
+    init(minimumDistance: CGFloat = 1, clickTolerance: CGFloat = 6) {
         self.minimumDistance = minimumDistance
+        self.clickTolerance = clickTolerance
     }
 
     mutating func mouseDown(screenY: CGFloat) {
         initialScreenY = screenY
         isDragging = false
+        maximumDistance = 0
     }
 
     mutating func mouseDragged(screenY: CGFloat) -> TabPointerEvent? {
         guard let initialScreenY else { return nil }
         let translation = initialScreenY - screenY
+        maximumDistance = max(maximumDistance, abs(translation))
         guard isDragging || abs(translation) >= minimumDistance else { return nil }
         isDragging = true
         return .dragChanged(translation)
@@ -33,17 +38,18 @@ struct TabPointerDragSession {
         defer {
             initialScreenY = nil
             isDragging = false
+            maximumDistance = 0
         }
         guard let initialScreenY else { return nil }
         let translation = initialScreenY - screenY
-        return isDragging || abs(translation) >= minimumDistance
-            ? .dragEnded(translation)
-            : .clicked
+        maximumDistance = max(maximumDistance, abs(translation))
+        return maximumDistance < clickTolerance ? .clicked : .dragEnded(translation)
     }
 
     mutating func cancel() {
         initialScreenY = nil
         isDragging = false
+        maximumDistance = 0
     }
 }
 
@@ -53,8 +59,11 @@ struct TabPointerDragSurface: NSViewRepresentable {
     let previewsEnabled: Bool
     let onTrackingChanged: (Bool, Bool) -> Void
     let onClick: () -> Void
-    let onDragChanged: (CGFloat) -> Void
-    let onDragEnded: (CGFloat) -> Void
+    let contextMenuTitle: String
+    let contextMenuItems: [TabPointerContextMenuItem]
+    let onContextMenuItem: (UUID) -> Void
+    let onDragChanged: (CGFloat, CGPoint) -> Void
+    let onDragEnded: (CGFloat, CGPoint) -> Void
     let onDragCancelled: () -> Void
 
     func makeNSView(context: Context) -> TabPointerTrackingView {
@@ -73,10 +82,19 @@ struct TabPointerDragSurface: NSViewRepresentable {
         view.previewsEnabled = previewsEnabled
         view.onTrackingChanged = onTrackingChanged
         view.onClick = onClick
+        view.contextMenuTitle = contextMenuTitle
+        view.contextMenuItems = contextMenuItems
+        view.onContextMenuItem = onContextMenuItem
         view.onDragChanged = onDragChanged
         view.onDragEnded = onDragEnded
         view.onDragCancelled = onDragCancelled
     }
+}
+
+struct TabPointerContextMenuItem: Equatable {
+    let id: UUID
+    let title: String
+    let isCurrent: Bool
 }
 
 final class TabPointerTrackingView: NSView {
@@ -85,10 +103,14 @@ final class TabPointerTrackingView: NSView {
     var previewsEnabled = true {
         didSet { if !previewsEnabled { hidePreview() } }
     }
+    var previewDelay: TimeInterval = 0.4
     var onTrackingChanged: (Bool, Bool) -> Void = { _, _ in }
     var onClick: () -> Void = {}
-    var onDragChanged: (CGFloat) -> Void = { _ in }
-    var onDragEnded: (CGFloat) -> Void = { _ in }
+    var contextMenuTitle = ""
+    var contextMenuItems: [TabPointerContextMenuItem] = []
+    var onContextMenuItem: (UUID) -> Void = { _ in }
+    var onDragChanged: (CGFloat, CGPoint) -> Void = { _, _ in }
+    var onDragEnded: (CGFloat, CGPoint) -> Void = { _, _ in }
     var onDragCancelled: () -> Void = {}
 
     private var dragSession = TabPointerDragSession()
@@ -135,11 +157,16 @@ final class TabPointerTrackingView: NSView {
         guard previewsEnabled, dragSession.initialScreenY == nil else { return }
         let task = DispatchWorkItem { [weak self] in self?.showPreview() }
         previewTask = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: task)
+        DispatchQueue.main.asyncAfter(deadline: .now() + previewDelay, execute: task)
     }
 
     override func mouseExited(with event: NSEvent) {
         hidePreview()
+    }
+
+    func showPreviewForTesting() {
+        hidePreview()
+        showPreview()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -151,13 +178,22 @@ final class TabPointerTrackingView: NSView {
         onTrackingChanged(true, true)
         releaseObserver = NotificationCenter.default.addObserver(
             forName: .dockNotesPointerReleased, object: nil, queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
             // The app monitor runs before the view's normal mouseUp. Give it
             // one event-loop turn to finish before recovering a missed release.
+            let releaseWindowNumber = (notification.object as? NSEvent)?.windowNumber
+            let releaseLocation = (notification.object as? NSEvent)?.locationInWindow
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.pressGeneration == generation,
                       self.dragSession.initialScreenY != nil else { return }
-                self.cancelTracking()
+                let releasePoint: NSPoint
+                if let releaseWindowNumber, let releaseLocation,
+                   let window = self.window, releaseWindowNumber == window.windowNumber {
+                    releasePoint = window.convertPoint(toScreen: releaseLocation)
+                } else {
+                    releasePoint = NSEvent.mouseLocation
+                }
+                self.recoverRelease(at: releasePoint)
             }
         }
     }
@@ -167,24 +203,55 @@ final class TabPointerTrackingView: NSView {
             screenY: screenY(for: event)
         ) else { return }
         hidePreview()
-        onDragChanged(translation)
+        onDragChanged(translation, NSEvent.mouseLocation)
     }
 
     override func mouseUp(with event: NSEvent) {
         guard dragSession.initialScreenY != nil else { return }
         removeReleaseObserver()
         let result = dragSession.mouseUp(screenY: screenY(for: event))
-        let releasePoint = event.window?.convertPoint(toScreen: event.locationInWindow)
-            ?? event.locationInWindow
+        let releasePoint = screenPoint(for: event)
         onTrackingChanged(false, window?.frame.contains(releasePoint) == true)
         switch result {
         case .clicked:
-            onClick()
+            if containsScreenPoint(releasePoint) { onClick() }
         case let .dragEnded(translation):
-            onDragEnded(translation)
+            onDragEnded(translation, NSEvent.mouseLocation)
         case .dragChanged, .none:
             break
         }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard !contextMenuItems.isEmpty else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        hidePreview()
+        let menu = NSMenu(title: contextMenuTitle)
+        let heading = NSMenuItem(title: contextMenuTitle, action: nil, keyEquivalent: "")
+        heading.isEnabled = false
+        menu.addItem(heading)
+        menu.addItem(.separator())
+        for entry in contextMenuItems {
+            let item = NSMenuItem(
+                title: entry.title,
+                action: #selector(selectContextWorkspace(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = entry.id.uuidString
+            item.state = entry.isCurrent ? .on : .off
+            item.isEnabled = !entry.isCurrent
+            menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func selectContextWorkspace(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String,
+              let id = UUID(uuidString: value) else { return }
+        onContextMenuItem(id)
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -243,6 +310,36 @@ final class TabPointerTrackingView: NSView {
         dragSession.cancel()
         onTrackingChanged(false, window?.frame.contains(NSEvent.mouseLocation) == true)
         onDragCancelled()
+    }
+
+    private func recoverRelease(at screenPoint: NSPoint) {
+        guard window?.frame.contains(screenPoint) == true else {
+            cancelTracking()
+            return
+        }
+        removeReleaseObserver()
+        let result = dragSession.mouseUp(screenY: screenPoint.y)
+        onTrackingChanged(false, true)
+        switch result {
+        case .clicked:
+            if containsScreenPoint(screenPoint) { onClick() }
+        case let .dragEnded(translation):
+            onDragEnded(translation, screenPoint)
+        case .dragChanged, .none:
+            break
+        }
+    }
+
+    private func containsScreenPoint(_ screenPoint: NSPoint) -> Bool {
+        guard let window else { return false }
+        return bounds.contains(convert(window.convertPoint(fromScreen: screenPoint), from: nil))
+    }
+
+    private func screenPoint(for event: NSEvent) -> NSPoint {
+        if let window, event.windowNumber == window.windowNumber {
+            return window.convertPoint(toScreen: event.locationInWindow)
+        }
+        return event.window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
     }
 
     private func screenY(for event: NSEvent) -> CGFloat {
