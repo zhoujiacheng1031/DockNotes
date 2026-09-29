@@ -80,6 +80,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 
     var edgePanelFrameForTesting: NSRect? { deckPanel?.frame }
     var edgePanelContentViewForTesting: NSView? { deckPanel?.contentView }
+    var notePanelContentViewForTesting: NSView? { notePanel?.contentView }
     var settingsWindowForTesting: NSWindow? { settingsWindow }
     var libraryWindowForTesting: NSWindow? { libraryWindow }
     var taskCenterWindowForTesting: NSWindow? { taskCenterWindow }
@@ -188,7 +189,8 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 
         notePanel = makeTransparentPanel(
             size: Metrics.noteSize,
-            content: NoteWindowView(store: store, settings: settings)
+            content: NoteWindowView(store: store, settings: settings),
+            cornerRadius: DockNotesGlassMetrics.panelRadius
         )
         deckPanel = makeTransparentPanel(
             size: CGSize(width: Metrics.deckWidth, height: deckHeight),
@@ -560,7 +562,11 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         }
     }
 
-    private func makeTransparentPanel<Content: View>(size: CGSize, content: Content) -> TransparentPanel {
+    private func makeTransparentPanel<Content: View>(
+        size: CGSize,
+        content: Content,
+        cornerRadius: CGFloat? = nil
+    ) -> TransparentPanel {
         // Liquid Glass's animated backdrop can leave rectangular copies when
         // these borderless, transparent panels move or change opacity. Keep the
         // same tinted glass design using the stable material renderer here.
@@ -573,7 +579,24 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        panel.contentView = hostingView
+        if let cornerRadius {
+            // The edge note uses the same rounded card as a desktop note.
+            // Mask its AppKit content so material and shadow pixels cannot
+            // leak into the four transparent window corners.
+            let containerView = NSView(frame: NSRect(origin: .zero, size: size))
+            containerView.autoresizesSubviews = true
+            containerView.wantsLayer = true
+            containerView.layer?.backgroundColor = NSColor.clear.cgColor
+            containerView.layer?.cornerRadius = cornerRadius
+            containerView.layer?.cornerCurve = .continuous
+            containerView.layer?.masksToBounds = true
+            hostingView.frame = containerView.bounds
+            hostingView.autoresizingMask = [.width, .height]
+            containerView.addSubview(hostingView)
+            panel.contentView = containerView
+        } else {
+            panel.contentView = hostingView
+        }
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

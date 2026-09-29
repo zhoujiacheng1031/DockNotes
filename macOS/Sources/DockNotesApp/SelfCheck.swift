@@ -3121,6 +3121,11 @@ enum SelfCheck {
         )
         edgeSwitchCoordinator.start()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        check(
+            edgeSwitchCoordinator.notePanelContentViewForTesting?.layer?.masksToBounds == true
+                && edgeSwitchCoordinator.notePanelContentViewForTesting?.layer?.cornerRadius == DockNotesGlassMetrics.panelRadius,
+            "the expanded edge note clips pixels outside all four rounded corners"
+        )
         let rightEdgeFrame = edgeSwitchCoordinator.edgePanelFrameForTesting
         windowSettings.deckEdge = .left
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))

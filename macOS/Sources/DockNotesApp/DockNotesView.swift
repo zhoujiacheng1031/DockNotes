@@ -133,33 +133,15 @@ private enum DockNotesGlassRuntime {
     }
 }
 
-/// One glass base for a whole utility window. A soft palette wash sits above
-/// the system material, so the gradient colors stay visible without turning
-/// the page back into an opaque card.
+/// A neutral glass base shared by utility windows.
 private struct DockNotesGlassCanvas: View {
-    let accent: Color
-
     var body: some View {
         Rectangle()
             .fill(Color.clear)
             .dockNotesGlass(
                 in: Rectangle(),
-                tint: accent.opacity(0.06),
                 fallbackOpacity: 0.26
             )
-            .overlay {
-                LinearGradient(
-                    colors: [
-                        Color(hex: NotePalette.gradients[0].endHex).opacity(0.30),
-                        accent.opacity(0.20),
-                        Color(hex: NotePalette.gradients[2].endHex).opacity(0.19),
-                        Color(hex: NotePalette.gradients[1].endHex).opacity(0.24)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .allowsHitTesting(false)
-            }
             .allowsHitTesting(false)
     }
 }
@@ -297,8 +279,7 @@ struct QuickCaptureView: View {
         }
         .padding(18)
         .frame(width: 420, height: 245)
-        .background(NotePalette.gradients[0].swiftUIGradient.opacity(0.28))
-        .dockNotesGlassPanel(radius: 20, tint: Color(hex: NotePalette.gradients[0].startHex).opacity(0.12))
+        .dockNotesGlassPanel(radius: 20, tint: Color.white.opacity(0.04))
         .onAppear {
             title = ""
             bodyDraft = ""
@@ -3261,7 +3242,7 @@ struct TaskCenterView: View {
             }
         }
         .frame(width: 860, height: 560)
-        .background(DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[0].startHex)))
+        .background(DockNotesGlassCanvas())
         .background {
             if !DockNotesGlassRuntime.isStaticRendering {
                 DockNotesGlassWindowChrome().frame(width: 0, height: 0)
@@ -3274,7 +3255,8 @@ struct TaskCenterView: View {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(NotePalette.gradients[0].swiftUIGradient)
+                        .fill(Color.white.opacity(0.10))
+                        .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04))
                     Image(systemName: "checklist")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(Color.black.opacity(0.64))
@@ -3932,7 +3914,7 @@ struct NotesLibraryView: View {
             }
         }
         .frame(width: 860, height: 560, alignment: .top)
-        .background(DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[2].startHex)))
+        .background(DockNotesGlassCanvas())
         .background {
             if !DockNotesGlassRuntime.isStaticRendering {
                 DockNotesGlassWindowChrome().frame(width: 0, height: 0)
@@ -4295,7 +4277,7 @@ struct WorkspaceManagementView: View {
             .background(Color.white.opacity(0.08))
         }
         .frame(width: size.width, height: size.height)
-        .background(DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[0].startHex)))
+        .background(DockNotesGlassCanvas())
         .alert(
             workspacePendingDeletion.map {
                 settings.language == .english
@@ -4363,7 +4345,7 @@ struct SettingsWindowView: View {
         }
         .frame(width: 760, height: 560)
         .background {
-            DockNotesGlassCanvas(accent: Color(hex: NotePalette.gradients[0].startHex))
+            DockNotesGlassCanvas()
                 .overlay {
                     if colorScheme == .dark {
                         Color.black.opacity(0.24).allowsHitTesting(false)
@@ -4393,7 +4375,8 @@ struct SettingsWindowView: View {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(NotePalette.gradients[0].swiftUIGradient)
+                        .fill(Color.white.opacity(0.10))
+                        .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04))
                     Image(systemName: "note.text")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(Color.black.opacity(0.64))
@@ -4416,26 +4399,22 @@ struct SettingsWindowView: View {
                 sidebarButton(
                     .appearance,
                     symbol: "slider.horizontal.3",
-                    title: settings.text(.appearance),
-                    gradient: NotePalette.gradients[0].swiftUIGradient
+                    title: settings.text(.appearance)
                 )
                 sidebarButton(
                     .reminders,
                     symbol: "bell.badge",
-                    title: settings.text(.reminders),
-                    gradient: NotePalette.gradients[3].swiftUIGradient
+                    title: settings.text(.reminders)
                 )
                 sidebarButton(
                     .ai,
                     symbol: "sparkles",
-                    title: settings.text(.ai),
-                    gradient: NotePalette.gradients[4].swiftUIGradient
+                    title: settings.text(.ai)
                 )
                 sidebarButton(
                     .archive,
                     symbol: "archivebox",
-                    title: settings.text(.archiveSettings),
-                    gradient: NotePalette.gradients[1].swiftUIGradient
+                    title: settings.text(.archiveSettings)
                 )
             }
             .padding(.horizontal, 12)
@@ -4464,8 +4443,7 @@ struct SettingsWindowView: View {
     private func sidebarButton(
         _ section: Section,
         symbol: String,
-        title: String,
-        gradient: LinearGradient
+        title: String
     ) -> some View {
         Button { selection = section } label: {
             HStack(spacing: 11) {
@@ -4482,26 +4460,14 @@ struct SettingsWindowView: View {
                         .opacity(0.46)
                 }
             }
-            .foregroundStyle(selection == section ? Color.black.opacity(0.72) : Color.secondary)
+            .foregroundStyle(selection == section ? Color.primary : Color.secondary)
             .padding(.horizontal, 12)
             .frame(height: 44)
-            .background {
-                if selection == section {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(gradient)
-                        .opacity(0.58)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.white.opacity(0.72), lineWidth: 0.7)
-                        }
-                        .shadow(color: Color.black.opacity(0.08), radius: 4, y: 2)
-                }
-            }
             .dockNotesGlassPanel(
                 radius: 12,
-                tint: selection == section ? Color.white.opacity(0.08) : Color.white.opacity(0.02),
+                tint: selection == section ? Color.white.opacity(0.18) : Color.white.opacity(0.02),
                 interactive: true,
-                fallbackOpacity: selection == section ? 0.24 : 0.10
+                fallbackOpacity: selection == section ? 0.30 : 0.10
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
@@ -4511,7 +4477,7 @@ struct SettingsWindowView: View {
 
     private var appearanceSettings: some View {
         settingsPage(title: settings.text(.appearance)) {
-            settingsCard(title: settings.text(.general), symbol: "globe", gradient: NotePalette.gradients[0].swiftUIGradient) {
+            settingsCard(title: settings.text(.general), symbol: "globe") {
                 settingLine(title: settings.text(.language), detail: settings.text(.languageHint)) {
                     Picker("", selection: $settings.language) {
                         Text(settings.text(.systemDefault)).tag(AppLanguage.system)
@@ -4538,7 +4504,7 @@ struct SettingsWindowView: View {
                 }
             }
 
-            settingsCard(title: settings.text(.deck), symbol: "rectangle.stack", gradient: NotePalette.gradients[4].swiftUIGradient) {
+            settingsCard(title: settings.text(.deck), symbol: "rectangle.stack") {
                 settingLine(title: settings.text(.deckPosition)) {
                     Picker("", selection: $settings.deckEdge) {
                         Text(settings.text(.leftEdge)).tag(DeckEdge.left)
@@ -4567,17 +4533,13 @@ struct SettingsWindowView: View {
                 opacityLine(settings.text(.collapsed), value: $settings.collapsedOpacity)
             }
 
-            settingsCard(title: settings.text(.notes), symbol: "note.text", gradient: NotePalette.gradients[2].swiftUIGradient) {
+            settingsCard(title: settings.text(.notes), symbol: "note.text") {
                 opacityLine(settings.text(.expanded), value: $settings.expandedOpacity)
                 HStack(spacing: 12) {
                     Image(systemName: "paintpalette.fill")
                         .foregroundStyle(Color.black.opacity(0.48))
                         .frame(width: 28, height: 28)
-                        .background {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(NotePalette.gradients[2].swiftUIGradient)
-                                .opacity(0.55)
-                        }
+                        .dockNotesGlassPanel(radius: 8, tint: Color.white.opacity(0.06))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(settings.text(.customColor)).font(.system(size: 12, weight: .semibold))
                         Text(settings.text(.noteAppearanceHint)).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -4590,7 +4552,7 @@ struct SettingsWindowView: View {
 
     private var aiSettings: some View {
         settingsPage(title: settings.text(.ai)) {
-            settingsCard(title: settings.text(.aiConnection), symbol: "network", gradient: NotePalette.gradients[4].swiftUIGradient) {
+            settingsCard(title: settings.text(.aiConnection), symbol: "network") {
                 settingLine(title: settings.text(.aiProvider)) {
                     Picker("", selection: $aiProviderDraft) {
                         Text(settings.text(.openAICompatible)).tag(AIProvider.openAICompatible)
@@ -4618,7 +4580,7 @@ struct SettingsWindowView: View {
                 }
             }
 
-            settingsCard(title: settings.text(.recommendedModels), symbol: "cpu", gradient: NotePalette.gradients[0].swiftUIGradient) {
+            settingsCard(title: settings.text(.recommendedModels), symbol: "cpu") {
                 HStack(spacing: 8) {
                     ForEach(aiProviderDraft.suggestedModels, id: \.self) { model in
                         Button {
@@ -4647,7 +4609,7 @@ struct SettingsWindowView: View {
                     .dockNotesGlassPanel(radius: 9, tint: Color.white.opacity(0.04), interactive: true)
             }
 
-            settingsCard(title: settings.text(.aiAPIKey), symbol: "key.fill", gradient: NotePalette.gradients[1].swiftUIGradient) {
+            settingsCard(title: settings.text(.aiAPIKey), symbol: "key.fill") {
                 SecureField("sk-…", text: $aiAPIKeyDraft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12).monospaced())
@@ -4682,8 +4644,7 @@ struct SettingsWindowView: View {
         settingsPage(title: settings.text(.reminders)) {
             settingsCard(
                 title: settings.text(.notificationPermission),
-                symbol: "bell.badge.fill",
-                gradient: NotePalette.gradients[3].swiftUIGradient
+                symbol: "bell.badge.fill"
             ) {
                 settingLine(title: settings.text(.notificationPermission)) {
                     HStack(spacing: 9) {
@@ -4716,8 +4677,7 @@ struct SettingsWindowView: View {
 
             settingsCard(
                 title: settings.text(.taskReminders),
-                symbol: "checklist.checked",
-                gradient: NotePalette.gradients[0].swiftUIGradient
+                symbol: "checklist.checked"
             ) {
                 settingLine(title: settings.text(.taskReminders), detail: settings.text(.taskRemindersHint)) {
                     Toggle("", isOn: $settings.taskRemindersEnabled)
@@ -4728,8 +4688,7 @@ struct SettingsWindowView: View {
 
             settingsCard(
                 title: calendarText("系统日历", "System Calendar"),
-                symbol: "calendar.badge.clock",
-                gradient: NotePalette.gradients[2].swiftUIGradient
+                symbol: "calendar.badge.clock"
             ) {
                 settingLine(
                     title: calendarText("日历权限", "Calendar access"),
@@ -4847,8 +4806,7 @@ struct SettingsWindowView: View {
 
             settingsCard(
                 title: settings.text(.dailySummary),
-                symbol: "sunrise.fill",
-                gradient: NotePalette.gradients[1].swiftUIGradient
+                symbol: "sunrise.fill"
             ) {
                 settingLine(title: settings.text(.dailySummary), detail: settings.text(.dailySummaryHint)) {
                     Toggle("", isOn: $settings.dailySummaryEnabled)
@@ -4963,7 +4921,7 @@ struct SettingsWindowView: View {
 
     private var archiveSettings: some View {
         settingsPage(title: settings.text(.archiveSettings)) {
-            settingsCard(title: settings.text(.obsidianBackup), symbol: "externaldrive.fill", gradient: NotePalette.gradients[1].swiftUIGradient) {
+            settingsCard(title: settings.text(.obsidianBackup), symbol: "externaldrive.fill") {
                 settingLine(title: settings.text(.obsidianBackup)) {
                     Toggle("", isOn: $settings.obsidianBackupEnabled)
                         .labelsHidden()
@@ -5067,7 +5025,6 @@ struct SettingsWindowView: View {
     private func settingsCard<Content: View>(
         title: String,
         symbol: String,
-        gradient: LinearGradient,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -5076,11 +5033,7 @@ struct SettingsWindowView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Color.black.opacity(0.58))
                     .frame(width: 26, height: 26)
-                    .background {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(gradient)
-                            .opacity(0.58)
-                    }
+                    .dockNotesGlassPanel(radius: 8, tint: Color.white.opacity(0.06))
                 Text(title)
                     .font(.system(size: 13, weight: .bold, design: .rounded))
             }
