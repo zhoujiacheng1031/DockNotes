@@ -117,7 +117,7 @@ private struct DockNotesGlassModifier<S: Shape>: ViewModifier {
     }
 }
 
-private enum DockNotesGlassMetrics {
+enum DockNotesGlassMetrics {
     static let panelRadius: CGFloat = 18
     static let controlRadius: CGFloat = 10
     static let softShadow = Color.black.opacity(0.12)
@@ -4510,7 +4510,7 @@ struct SettingsWindowView: View {
     }
 
     private var appearanceSettings: some View {
-        settingsPage(title: settings.text(.appearance), subtitle: settings.text(.appearanceSettingsHint)) {
+        settingsPage(title: settings.text(.appearance)) {
             settingsCard(title: settings.text(.general), symbol: "globe", gradient: NotePalette.gradients[0].swiftUIGradient) {
                 settingLine(title: settings.text(.language), detail: settings.text(.languageHint)) {
                     Picker("", selection: $settings.language) {
@@ -4589,7 +4589,7 @@ struct SettingsWindowView: View {
     }
 
     private var aiSettings: some View {
-        settingsPage(title: settings.text(.ai), subtitle: settings.text(.aiSettingsHint)) {
+        settingsPage(title: settings.text(.ai)) {
             settingsCard(title: settings.text(.aiConnection), symbol: "network", gradient: NotePalette.gradients[4].swiftUIGradient) {
                 settingLine(title: settings.text(.aiProvider)) {
                     Picker("", selection: $aiProviderDraft) {
@@ -4679,7 +4679,7 @@ struct SettingsWindowView: View {
     }
 
     private var reminderSettings: some View {
-        settingsPage(title: settings.text(.reminders), subtitle: settings.text(.reminderSettingsHint)) {
+        settingsPage(title: settings.text(.reminders)) {
             settingsCard(
                 title: settings.text(.notificationPermission),
                 symbol: "bell.badge.fill",
@@ -4962,7 +4962,7 @@ struct SettingsWindowView: View {
     }
 
     private var archiveSettings: some View {
-        settingsPage(title: settings.text(.archiveSettings), subtitle: settings.text(.archiveSettingsHint)) {
+        settingsPage(title: settings.text(.archiveSettings)) {
             settingsCard(title: settings.text(.obsidianBackup), symbol: "externaldrive.fill", gradient: NotePalette.gradients[1].swiftUIGradient) {
                 settingLine(title: settings.text(.obsidianBackup)) {
                     Toggle("", isOn: $settings.obsidianBackupEnabled)
@@ -5054,17 +5054,11 @@ struct SettingsWindowView: View {
         }
     }
 
-    private func settingsPage<Content: View>(title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {
+    private func settingsPage<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.bottom, 2)
+            Text(title)
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .padding(.bottom, 2)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

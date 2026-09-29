@@ -213,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         item.menu = makeStatusMenu()
         statusItem = item
+        panelCoordinator?.statusItemButton = item.button
         store.$workspaces
             .combineLatest(store.$activeWorkspaceID)
             .dropFirst()

@@ -977,10 +977,21 @@ enum SelfCheck {
         libraryStore.isPreferencesPresented = true
         libraryStore.presentLibrary()
         check(libraryStore.isLibraryPresented, "the in-app library entry presents the library")
-        check(!libraryStore.isPreferencesPresented, "opening the library dismisses settings")
+        check(libraryStore.isPreferencesPresented, "opening the library keeps settings visible")
         libraryStore.presentTaskCenter()
         check(libraryStore.isTaskCenterPresented, "the task center entry presents the task center")
-        check(!libraryStore.isLibraryPresented, "opening the task center dismisses the library")
+        check(libraryStore.isLibraryPresented, "opening the task center keeps the library visible")
+        libraryStore.presentSettings()
+        check(
+            libraryStore.isPreferencesPresented && libraryStore.isTaskCenterPresented && libraryStore.isLibraryPresented,
+            "opening settings keeps the library and task center visible"
+        )
+        libraryStore.isTaskCenterPresented = false
+        libraryStore.presentTaskCenter()
+        check(
+            libraryStore.isPreferencesPresented && libraryStore.isTaskCenterPresented && libraryStore.isLibraryPresented,
+            "opening the task center keeps settings and the library visible"
+        )
         let libraryArchivedDeleteID = libraryStore.notes[0].id
         libraryStore.archive(libraryArchivedDeleteID)
         check(
@@ -3199,6 +3210,31 @@ enum SelfCheck {
                 "dragging the settings titlebar actually changes the window position"
             )
         }
+        edgeSwitchStore.presentSettings()
+        edgeSwitchStore.presentTaskCenter()
+        edgeSwitchStore.presentLibrary()
+        check(
+            edgeSwitchCoordinator.settingsWindowForTesting?.isVisible == true
+                && edgeSwitchCoordinator.taskCenterWindowForTesting?.isVisible == true
+                && edgeSwitchCoordinator.libraryWindowForTesting?.isVisible == true,
+            "settings, task center, and library windows remain visible together"
+        )
+        edgeSwitchStore.presentSettings()
+        edgeSwitchStore.presentLibrary()
+        let frontUtilityWindow = NSApp.orderedWindows.first {
+            $0 === edgeSwitchCoordinator.settingsWindowForTesting
+                || $0 === edgeSwitchCoordinator.taskCenterWindowForTesting
+                || $0 === edgeSwitchCoordinator.libraryWindowForTesting
+        }
+        check(
+            frontUtilityWindow === edgeSwitchCoordinator.libraryWindowForTesting
+                && edgeSwitchCoordinator.settingsWindowForTesting?.isVisible == true
+                && edgeSwitchCoordinator.taskCenterWindowForTesting?.isVisible == true,
+            "reopening an already visible library focuses it without closing other windows"
+        )
+        edgeSwitchStore.isPreferencesPresented = false
+        edgeSwitchStore.isTaskCenterPresented = false
+        edgeSwitchStore.isLibraryPresented = false
         edgeSwitchCoordinator.stop()
         windowSettings.deckEdge = .right
         let windowCoordinator = PanelCoordinator(store: first, settings: windowSettings)
@@ -3216,6 +3252,12 @@ enum SelfCheck {
                 && desktopWindow.isMovable
                 && desktopWindow.isMovableByWindowBackground,
             "desktop notes support both resizing and background movement"
+        )
+        check(!desktopWindow.hasShadow, "desktop notes avoid a rectangular shadow at rounded corners")
+        check(
+            desktopWindow.contentView?.layer?.masksToBounds == true
+                && desktopWindow.contentView?.layer?.cornerRadius == DockNotesGlassMetrics.panelRadius,
+            "desktop note content clips transparent pixels outside its rounded corners"
         )
         let movedOrigin = NSPoint(x: desktopWindow.frame.minX + 24, y: desktopWindow.frame.minY + 18)
         desktopWindow.setFrameOrigin(movedOrigin)

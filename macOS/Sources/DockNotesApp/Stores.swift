@@ -350,6 +350,12 @@ private enum AIKeychain {
 
 @MainActor
 final class NotesStore: ObservableObject {
+    enum UtilityWindowRequest {
+        case settings
+        case library
+        case taskCenter
+    }
+
     @Published private(set) var notes: [DockNote]
     @Published private(set) var archivedNotes: [DockNote]
     @Published private(set) var workspaces: [NoteWorkspace]
@@ -362,6 +368,7 @@ final class NotesStore: ObservableObject {
     @Published var isWorkspaceManagementPresented = false
     @Published var isTaskCenterPresented = false
     @Published var isQuickCapturePresented = false
+    let utilityWindowRequests = PassthroughSubject<UtilityWindowRequest, Never>()
     @Published private(set) var desktopNoteIDs: [DockNote.ID] = []
     @Published private(set) var lastObsidianBackupURL: URL?
     @Published private(set) var lastObsidianBackupError: ObsidianBackupFailure?
@@ -830,15 +837,15 @@ final class NotesStore: ObservableObject {
     }
 
     func presentSettings() {
+        let alreadyPresented = isPreferencesPresented
         isPreferencesPresented = true
-        isLibraryPresented = false
-        isTaskCenterPresented = false
+        if alreadyPresented { utilityWindowRequests.send(.settings) }
     }
 
     func presentLibrary() {
+        let alreadyPresented = isLibraryPresented
         isLibraryPresented = true
-        isPreferencesPresented = false
-        isTaskCenterPresented = false
+        if alreadyPresented { utilityWindowRequests.send(.library) }
     }
 
     func presentWorkspaceManagement() {
@@ -846,9 +853,9 @@ final class NotesStore: ObservableObject {
     }
 
     func presentTaskCenter() {
+        let alreadyPresented = isTaskCenterPresented
         isTaskCenterPresented = true
-        isLibraryPresented = false
-        isPreferencesPresented = false
+        if alreadyPresented { utilityWindowRequests.send(.taskCenter) }
     }
 
     func presentQuickCapture() {

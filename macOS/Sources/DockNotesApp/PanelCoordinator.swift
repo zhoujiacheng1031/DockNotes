@@ -70,6 +70,7 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     private var taskCenterWindow: NSWindow?
     private var undoPanel: TransparentPanel?
     private var quickCaptureWindow: NSWindow?
+    weak var statusItemButton: NSButton?
     private var desktopNoteWindows: [DockNote.ID: NSWindow] = [:]
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
@@ -80,6 +81,8 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
     var edgePanelFrameForTesting: NSRect? { deckPanel?.frame }
     var edgePanelContentViewForTesting: NSView? { deckPanel?.contentView }
     var settingsWindowForTesting: NSWindow? { settingsWindow }
+    var libraryWindowForTesting: NSWindow? { libraryWindow }
+    var taskCenterWindowForTesting: NSWindow? { taskCenterWindow }
     private(set) var edgeInteractionRefreshMatchesCommittedEdgeForTesting = true
 
     init(
@@ -263,6 +266,17 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
             .sink { [weak self] presented in
                 guard let self else { return }
                 presented ? self.showTaskCenterWindow() : self.taskCenterWindow?.orderOut(nil)
+            }
+            .store(in: &cancellables)
+
+        store.utilityWindowRequests
+            .sink { [weak self] request in
+                guard let self else { return }
+                switch request {
+                case .settings: self.showSettingsWindow()
+                case .library: self.showLibraryWindow()
+                case .taskCenter: self.showTaskCenterWindow()
+                }
             }
             .store(in: &cancellables)
 
@@ -465,6 +479,12 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         containerView.autoresizesSubviews = true
         containerView.wantsLayer = true
         containerView.layer?.backgroundColor = NSColor.clear.cgColor
+        // The transparent window can still expose the hosting view's square
+        // material and shadow pixels. Clip the actual AppKit content layer to
+        // the same shape as the note card, including during live resize.
+        containerView.layer?.cornerRadius = DockNotesGlassMetrics.panelRadius
+        containerView.layer?.cornerCurve = .continuous
+        containerView.layer?.masksToBounds = true
         hostingView.frame = containerView.bounds
         hostingView.autoresizingMask = [.width, .height]
         containerView.addSubview(hostingView)
@@ -489,7 +509,9 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         window.level = Self.desktopWindowLevel(isPinned: store.note(id: noteID)?.isPinned == true)
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        // AppKit's window shadow uses the rectangular frame and shows through
+        // the transparent corners of the rounded content.
+        window.hasShadow = false
         window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false
         // With a full-content titlebar, treating the entire note as a drag
@@ -794,26 +816,15 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
 
     private func handleLocalPointerDown(_ event: NSEvent) {
         let point = NSEvent.mouseLocation
-        guard !Self.localClickIsOutsideApp(
+        // Keep independent utility windows visible while interacting with
+        // DockNotes controls, including the edge deck and status menu.
+        if Self.localClickIsOutsideApp(
             hasWindow: event.window != nil,
             point: point,
             appWindowFrames: visibleAppWindowFrames
-        ) else {
+        ) {
             store.handleOutsideClick(keepDeckOpen: settings.keepDeckOpen)
-            return
         }
-        // Borderless non-activating panels can deliver a local mouse event
-        // without attaching their NSWindow. The screen point is authoritative
-        // in that case; returning here keeps a label drag from being mistaken
-        // for an outside click.
-        guard let window = event.window else { return }
-        if window === settingsWindow || window === libraryWindow
-            || window === workspaceManagementWindow { return }
-
-        // Local events already belong to DockNotes. This includes SwiftUI's
-        // separate popover window used by More Notes, so it must not be treated
-        // as an outside click before the row button receives the same event.
-        if store.isPreferencesPresented { store.isPreferencesPresented = false }
     }
 
     private var visibleAppWindowFrames: [NSRect] {
@@ -823,6 +834,9 @@ final class PanelCoordinator: NSObject, NSWindowDelegate {
         }
         for window in desktopNoteWindows.values where window.isVisible {
             frames.append(window.frame)
+        }
+        if let statusWindow = statusItemButton?.window, statusWindow.isVisible {
+            frames.append(statusWindow.frame)
         }
         return frames
     }
