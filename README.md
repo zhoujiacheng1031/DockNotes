@@ -29,7 +29,7 @@ DockNotes 是一款原生 macOS 桌面便签应用。便签可以收纳在屏幕
 
 ## 下载应用
 
-从 [v0.9.0 Release](https://github.com/zhoujiacheng1031/DockNotes/releases/tag/v0.9.0) 下载 `DockNotes-macOS-v0.9.0.zip`，解压后将 `DockNotes.app` 移入“应用程序”文件夹。完整更新内容见 [v0.9.0 更新记录](docs/releases/v0.9.0.md)。
+Apple Silicon Mac 可从 [v0.9.0 Release](https://github.com/zhoujiacheng1031/DockNotes/releases/tag/v0.9.0) 下载 `DockNotes-macOS-v0.9.0.zip`，解压后将 `DockNotes.app` 移入“应用程序”文件夹。完整更新内容见 [v0.9.0 更新记录](docs/releases/v0.9.0.md)。
 
 ## 目录
 
