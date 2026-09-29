@@ -1,6 +1,6 @@
 # DockNotes
 
-当前版本：v0.9。工作区把侧边标签按项目或场景分组，并保持任务、提醒和系统日历的全局汇总；旧数据会无损迁移到默认工作区。
+当前版本：**v0.9.0**（macOS 15 或更高版本）。工作区把侧边标签按项目或场景分组；任务中心、提醒和系统日历仍汇总所有工作区。旧版便签会迁移到默认工作区，并保留迁移前备份。
 
 在“偏好设置 → 提醒与计划 → 系统日历”中授权后，可创建专用 `DockNotes` 日历或选择已有的可写日历，再开启同步。普通任务会生成一个 30 分钟事件，重复任务会投影当前实例与未来 7 天计划；若事件在系统日历中被修改或删除，DockNotes 会要求选择“重新同步”或“采用日历更改”，不会静默覆盖。
 
@@ -20,7 +20,7 @@ DockNotes 是一款原生 macOS 桌面便签应用。便签可以收纳在屏幕
 - 渐变色、RGB/Hex 自定义颜色、材质、字体和透明度
 - 有序列表、待办事项、搜索与听写
 - OpenAI 兼容接口与 Anthropic Messages API，提供模型预设、自定义模型和持久化配置
-- 与侧边标签视觉统一的精简设置页，集中管理外观、提醒、AI 和归档设置
+- 中性 glass 风格的设置、任务中心、便签库和工作区管理页面；这些窗口可以同时打开
 - 应用内归档库，以及可选的 Obsidian Markdown/双向链接索引备份
 - 简体中文、English 和跟随系统语言
 - 本地持久化存储
@@ -29,7 +29,7 @@ DockNotes 是一款原生 macOS 桌面便签应用。便签可以收纳在屏幕
 
 ## 下载应用
 
-可从 [GitHub Releases](https://github.com/zhoujiacheng1031/DockNotes/releases/latest) 下载最新的 macOS 安装包，解压后将 `DockNotes.app` 移入“应用程序”文件夹。
+从 [v0.9.0 Release](https://github.com/zhoujiacheng1031/DockNotes/releases/tag/v0.9.0) 下载 `DockNotes-macOS-v0.9.0.zip`，解压后将 `DockNotes.app` 移入“应用程序”文件夹。完整更新内容见 [v0.9.0 更新记录](docs/releases/v0.9.0.md)。
 
 ## 目录
 
